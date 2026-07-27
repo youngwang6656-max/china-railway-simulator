@@ -80,7 +80,7 @@
 ### Task 1: Reproducible Toolchain and Bootable Solution
 
 **Files:**
-- Create: `.gitignore`
+- Modify: `.gitignore`
 - Create: `.editorconfig`
 - Create: `global.json`
 - Create: `Directory.Build.props`
@@ -181,6 +181,7 @@ Expected: `.tools/dotnet/dotnet.exe --list-sdks` prints one .NET 8 SDK and the G
 Create `.gitignore`:
 
 ```gitignore
+.worktrees/
 .tools/
 .godot/
 .vs/
