@@ -52,6 +52,7 @@ public sealed class SimulationCommandBus
     public IReadOnlyList<CommandResult> DispatchDue(SimulationTick tick)
     {
         CommandEnvelope[] due;
+        ICommandHandler?[] handlers;
 
         lock (_gate)
         {
@@ -65,16 +66,21 @@ public sealed class SimulationCommandBus
                 .Select(item => item.Sequence)
                 .ToHashSet();
             _scheduled.RemoveAll(item => dueIds.Contains(item.Sequence));
+
+            handlers = due
+                .Select(item => _handlers.TryGetValue(
+                    item.Payload.GetType(),
+                    out var handler)
+                    ? handler
+                    : null)
+                .ToArray();
         }
 
         var results = new List<CommandResult>(due.Length);
-        foreach (var envelope in due)
+        for (var index = 0; index < due.Length; index++)
         {
-            ICommandHandler? handler;
-            lock (_gate)
-            {
-                _handlers.TryGetValue(envelope.Payload.GetType(), out handler);
-            }
+            var envelope = due[index];
+            var handler = handlers[index];
 
             var decision = handler is null
                 ? CommandDecision.Reject(

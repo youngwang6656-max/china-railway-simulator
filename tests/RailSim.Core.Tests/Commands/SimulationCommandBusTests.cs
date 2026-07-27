@@ -78,9 +78,40 @@ public sealed class SimulationCommandBusTests
         Assert.NotSame(log, bus.ExportLog());
     }
 
+    [Fact]
+    public async Task DispatchDueUsesHandlerSnapshotFromDispatchBoundary()
+    {
+        var bus = new SimulationCommandBus();
+        var blockingHandler = new BlockingHandler();
+        bus.Register(blockingHandler);
+        bus.Enqueue(new BlockingCommand(), new SimulationTick(1));
+        bus.Enqueue(new LateRegisteredCommand(), new SimulationTick(1));
+
+        var dispatch = Task.Run(() => bus.DispatchDue(new SimulationTick(1)));
+        try
+        {
+            Assert.True(blockingHandler.Entered.Wait(TimeSpan.FromSeconds(5)));
+            bus.Register(new LateRegisteredHandler());
+        }
+        finally
+        {
+            blockingHandler.Continue.Set();
+        }
+
+        var results = await dispatch;
+
+        Assert.Equal(CommandStatus.Accepted, results[0].Status);
+        Assert.Equal(CommandStatus.Rejected, results[1].Status);
+        Assert.Equal("handler.missing", results[1].Code);
+    }
+
     private sealed record AppendCommand(string Value) : ISimulationCommand;
 
     private sealed record UnknownCommand : ISimulationCommand;
+
+    private sealed record BlockingCommand : ISimulationCommand;
+
+    private sealed record LateRegisteredCommand : ISimulationCommand;
 
     private sealed class AppendHandler(List<string> values)
         : CommandHandler<AppendCommand>
@@ -90,6 +121,32 @@ public sealed class SimulationCommandBusTests
             SimulationTick tick)
         {
             values.Add(command.Value);
+            return CommandDecision.Accept();
+        }
+    }
+
+    private sealed class BlockingHandler : CommandHandler<BlockingCommand>
+    {
+        public ManualResetEventSlim Continue { get; } = new(false);
+
+        public ManualResetEventSlim Entered { get; } = new(false);
+
+        protected override CommandDecision Handle(
+            BlockingCommand command,
+            SimulationTick tick)
+        {
+            Entered.Set();
+            Continue.Wait();
+            return CommandDecision.Accept();
+        }
+    }
+
+    private sealed class LateRegisteredHandler : CommandHandler<LateRegisteredCommand>
+    {
+        protected override CommandDecision Handle(
+            LateRegisteredCommand command,
+            SimulationTick tick)
+        {
             return CommandDecision.Accept();
         }
     }
