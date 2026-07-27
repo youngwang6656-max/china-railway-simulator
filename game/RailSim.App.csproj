@@ -1,0 +1,10 @@
+<Project Sdk="Godot.NET.Sdk/4.6.3">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>RailSim.App</RootNamespace>
+    <AssemblyName>RailSim.App</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\src\RailSim.Core\RailSim.Core.csproj" />
+  </ItemGroup>
+</Project>

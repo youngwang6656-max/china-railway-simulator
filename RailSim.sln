@@ -1,0 +1,42 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{B03A3560-1875-4496-9973-0F38DA1AD022}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RailSim.Core", "src\RailSim.Core\RailSim.Core.csproj", "{E4825B11-52F1-4A88-B4FD-06D285E37E1E}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{45F9930B-9BFC-489D-8DD1-41F2A7298545}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RailSim.Core.Tests", "tests\RailSim.Core.Tests\RailSim.Core.Tests.csproj", "{F1AA1E4C-3C38-4B22-8C88-953A6CC011D2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RailSim.App", "game\RailSim.App.csproj", "{C5B541BA-E51E-4DD3-A834-DE9ABDAB2E9A}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{E4825B11-52F1-4A88-B4FD-06D285E37E1E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E4825B11-52F1-4A88-B4FD-06D285E37E1E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E4825B11-52F1-4A88-B4FD-06D285E37E1E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E4825B11-52F1-4A88-B4FD-06D285E37E1E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F1AA1E4C-3C38-4B22-8C88-953A6CC011D2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F1AA1E4C-3C38-4B22-8C88-953A6CC011D2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F1AA1E4C-3C38-4B22-8C88-953A6CC011D2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F1AA1E4C-3C38-4B22-8C88-953A6CC011D2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C5B541BA-E51E-4DD3-A834-DE9ABDAB2E9A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C5B541BA-E51E-4DD3-A834-DE9ABDAB2E9A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C5B541BA-E51E-4DD3-A834-DE9ABDAB2E9A}.Release|Any CPU.ActiveCfg = Debug|Any CPU
+		{C5B541BA-E51E-4DD3-A834-DE9ABDAB2E9A}.Release|Any CPU.Build.0 = Debug|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{E4825B11-52F1-4A88-B4FD-06D285E37E1E} = {B03A3560-1875-4496-9973-0F38DA1AD022}
+		{F1AA1E4C-3C38-4B22-8C88-953A6CC011D2} = {45F9930B-9BFC-489D-8DD1-41F2A7298545}
+	EndGlobalSection
+EndGlobal
