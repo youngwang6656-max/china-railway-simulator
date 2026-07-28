@@ -67,6 +67,11 @@ try {
         throw "dotnet build failed"
     }
 
+    & $dotnet build game\RailSim.App.csproj --configuration Debug --no-restore
+    if ($LASTEXITCODE -ne 0) {
+        throw "Godot Debug runtime build failed"
+    }
+
     $testRunName = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ') +
         '-' + [Guid]::NewGuid().ToString('N')
     $testRunRoot = Join-Path $testResultsRoot $testRunName
