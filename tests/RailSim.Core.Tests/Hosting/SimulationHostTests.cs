@@ -113,6 +113,155 @@ public sealed class SimulationHostTests
         Assert.Empty(events);
     }
 
+    [Fact]
+    public void HandlerFailurePropagatesAndPermanentlyFaultsHost()
+    {
+        var failure = new TestFailureException("handler failed");
+        var bus = new SimulationCommandBus();
+        bus.Register(new ThrowingHandler(failure));
+        var host = new SimulationHost(
+            new SimulationClock(),
+            bus,
+            Array.Empty<ISimulationSystem>());
+        host.Submit(new ThrowCommand());
+
+        var propagated = Assert.Throws<TestFailureException>(() =>
+            host.AdvanceFrame(
+                TimeSpan.FromMilliseconds(250),
+                SimulationRate.FromPreset(SimulationSpeedPreset.Normal)));
+
+        Assert.Same(failure, propagated);
+        var firstAdvanceRejection = Assert.Throws<InvalidOperationException>(() =>
+            host.AdvanceFrame(
+                TimeSpan.Zero,
+                SimulationRate.FromPreset(SimulationSpeedPreset.Normal)));
+        var secondAdvanceRejection = Assert.Throws<InvalidOperationException>(() =>
+            host.AdvanceFrame(
+                TimeSpan.Zero,
+                SimulationRate.FromPreset(SimulationSpeedPreset.Normal)));
+        var submitRejection = Assert.Throws<InvalidOperationException>(() =>
+            host.Submit(new ThrowCommand()));
+        Assert.Equal(firstAdvanceRejection.Message, secondAdvanceRejection.Message);
+        Assert.Equal(firstAdvanceRejection.Message, submitRejection.Message);
+    }
+
+    [Fact]
+    public void SystemFailurePropagatesAndPermanentlyFaultsHost()
+    {
+        var failure = new TestFailureException("system failed");
+        var host = new SimulationHost(
+            new SimulationClock(),
+            new SimulationCommandBus(),
+            new[] { new ThrowingSystem(failure) });
+
+        var propagated = Assert.Throws<TestFailureException>(() =>
+            host.AdvanceFrame(
+                TimeSpan.FromMilliseconds(250),
+                SimulationRate.FromPreset(SimulationSpeedPreset.Normal)));
+
+        Assert.Same(failure, propagated);
+        Assert.Throws<InvalidOperationException>(() =>
+            host.AdvanceFrame(
+                TimeSpan.Zero,
+                SimulationRate.FromPreset(SimulationSpeedPreset.Normal)));
+        Assert.Throws<InvalidOperationException>(() =>
+            host.Submit(new ThrowCommand()));
+    }
+
+    [Fact]
+    public void ReentrantAdvanceIsRejectedAndFaultsOuterAdvance()
+    {
+        var store = new SnapshotStore();
+        var system = new ReentrantSystem();
+        var host = new SimulationHost(
+            new SimulationClock(),
+            new SimulationCommandBus(),
+            new[] { system },
+            store,
+            Array.Empty<ISnapshotContributor>());
+        system.Host = host;
+
+        var rejection = Assert.Throws<InvalidOperationException>(() =>
+            host.AdvanceFrame(
+                TimeSpan.FromMilliseconds(250),
+                SimulationRate.FromPreset(SimulationSpeedPreset.Normal)));
+
+        Assert.Contains("advancing", rejection.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(new SimulationTick(1), host.CurrentTick);
+        Assert.Equal(SimulationTick.Zero, store.GetLatest().Tick);
+        Assert.Throws<InvalidOperationException>(() =>
+            host.AdvanceFrame(
+                TimeSpan.Zero,
+                SimulationRate.FromPreset(SimulationSpeedPreset.Normal)));
+    }
+
+    [Fact]
+    public async Task ConcurrentAdvanceIsRejectedWithoutFaultingActiveAdvance()
+    {
+        var system = new BlockingSystem();
+        var host = new SimulationHost(
+            new SimulationClock(),
+            new SimulationCommandBus(),
+            new[] { system });
+        var rate = SimulationRate.FromPreset(SimulationSpeedPreset.Normal);
+        var activeAdvance = Task.Run(() => host.AdvanceFrame(
+            TimeSpan.FromMilliseconds(250),
+            rate));
+        Task<Exception>? competingAdvance = null;
+        var completedPromptly = false;
+
+        try
+        {
+            Assert.True(system.Entered.Wait(TimeSpan.FromSeconds(5)));
+            competingAdvance = Task.Run(() => Record.Exception(() =>
+                host.AdvanceFrame(TimeSpan.FromMilliseconds(250), rate)));
+            completedPromptly = await Task.WhenAny(
+                competingAdvance,
+                Task.Delay(TimeSpan.FromSeconds(1))) == competingAdvance;
+        }
+        finally
+        {
+            system.Continue.Set();
+        }
+
+        var activeResult = await activeAdvance;
+        Assert.NotNull(competingAdvance);
+        var competingException = await competingAdvance;
+        Assert.True(completedPromptly);
+        var rejection = Assert.IsType<InvalidOperationException>(competingException);
+        Assert.Contains("advancing", rejection.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(new SimulationTick(1), activeResult.CurrentTick);
+
+        var resumedResult = host.AdvanceFrame(
+            TimeSpan.FromMilliseconds(250),
+            rate);
+
+        Assert.Equal(new SimulationTick(2), resumedResult.CurrentTick);
+    }
+
+    [Fact]
+    public void InvalidArgumentsAreRejectedBeforeFaultedState()
+    {
+        var host = new SimulationHost(
+            new SimulationClock(),
+            new SimulationCommandBus(),
+            new[] { new ThrowingSystem(new TestFailureException("failed")) });
+        Assert.Throws<TestFailureException>(() =>
+            host.AdvanceFrame(
+                TimeSpan.FromMilliseconds(250),
+                SimulationRate.FromPreset(SimulationSpeedPreset.Normal)));
+
+        var elapsedException = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            host.AdvanceFrame(
+                TimeSpan.FromTicks(-1),
+                SimulationRate.FromPreset(SimulationSpeedPreset.Normal)));
+        var commandException = Assert.Throws<ArgumentNullException>(() =>
+            host.Submit(null!));
+
+        Assert.Equal("realElapsed", elapsedException.ParamName);
+        Assert.Equal("command", commandException.ParamName);
+    }
+
     private static long[] RunTrace(IEnumerable<TimeSpan> frames)
     {
         var trace = new List<long>();
@@ -131,6 +280,8 @@ public sealed class SimulationHostTests
     }
 
     private sealed record RecordCommand(string Value) : ISimulationCommand;
+
+    private sealed record ThrowCommand : ISimulationCommand;
 
     private sealed class RecordHandler(List<string> events)
         : CommandHandler<RecordCommand>
@@ -166,4 +317,64 @@ public sealed class SimulationHostTests
             trace.Add(context.Tick.Value);
         }
     }
+
+    private sealed class ThrowingHandler(Exception failure)
+        : CommandHandler<ThrowCommand>
+    {
+        protected override CommandDecision Handle(
+            ThrowCommand command,
+            SimulationTick tick)
+        {
+            throw failure;
+        }
+    }
+
+    private sealed class ThrowingSystem(Exception failure) : ISimulationSystem
+    {
+        public int Order => 10;
+
+        public void Step(SimulationStepContext context)
+        {
+            throw failure;
+        }
+    }
+
+    private sealed class ReentrantSystem : ISimulationSystem
+    {
+        private bool _hasReentered;
+
+        public SimulationHost Host { get; set; } = null!;
+
+        public int Order => 10;
+
+        public void Step(SimulationStepContext context)
+        {
+            if (_hasReentered)
+            {
+                return;
+            }
+
+            _hasReentered = true;
+            Host.AdvanceFrame(
+                TimeSpan.FromMilliseconds(250),
+                SimulationRate.FromPreset(SimulationSpeedPreset.Normal));
+        }
+    }
+
+    private sealed class BlockingSystem : ISimulationSystem
+    {
+        public ManualResetEventSlim Continue { get; } = new(false);
+
+        public ManualResetEventSlim Entered { get; } = new(false);
+
+        public int Order => 10;
+
+        public void Step(SimulationStepContext context)
+        {
+            Entered.Set();
+            Continue.Wait();
+        }
+    }
+
+    private sealed class TestFailureException(string message) : Exception(message);
 }

@@ -11,12 +11,19 @@ public sealed record FrameAdvanceResult(
 
 public sealed class SimulationHost
 {
+    private const string AdvancingMessage =
+        "Simulation host is already advancing.";
+    private const string FaultedMessage =
+        "Simulation host is faulted and cannot continue.";
+
     private readonly SimulationClock _clock;
     private readonly SimulationCommandBus _commandBus;
     private readonly ISimulationSystem[] _systems;
     private readonly SnapshotStore _snapshotStore;
     private readonly ISnapshotContributor[] _contributors;
+    private readonly object _lifecycleGate = new();
     private long _lastCommandSequence;
+    private LifecycleState _lifecycleState;
 
     public SimulationHost(
         SimulationClock clock,
@@ -99,6 +106,15 @@ public sealed class SimulationHost
     public CommandEnvelope Submit(ISimulationCommand command)
     {
         ArgumentNullException.ThrowIfNull(command);
+
+        lock (_lifecycleGate)
+        {
+            if (_lifecycleState == LifecycleState.Faulted)
+            {
+                throw new InvalidOperationException(FaultedMessage);
+            }
+        }
+
         return _commandBus.Enqueue(command, _clock.Current.Next());
     }
 
@@ -106,64 +122,124 @@ public sealed class SimulationHost
         TimeSpan realElapsed,
         SimulationRate rate)
     {
-        var dueSteps = _clock.Accumulate(realElapsed, rate);
-        var commandResults = new List<CommandResult>();
-
-        for (var index = 0; index < dueSteps; index++)
+        if (realElapsed < TimeSpan.Zero)
         {
-            var tick = _clock.AdvanceOne();
-            var tickResults = _commandBus.DispatchDue(tick);
-            commandResults.AddRange(tickResults);
-            if (tickResults.Count > 0)
-            {
-                _lastCommandSequence = tickResults.Max(result => result.Sequence);
-            }
-
-            var notices = new SimulationNoticeSink();
-            var context = new SimulationStepContext(
-                tick,
-                SimulationClock.StepDuration,
-                notices);
-            foreach (var system in _systems)
-            {
-                system.Step(context);
-            }
-
-            var sections = _contributors
-                .Select(contributor =>
-                {
-                    var section = contributor.Capture();
-                    if (section is null)
-                    {
-                        throw new InvalidOperationException(
-                            "Snapshot contributor returned null section.");
-                    }
-
-                    if (string.IsNullOrWhiteSpace(section.Key))
-                    {
-                        throw new InvalidOperationException(
-                            "Captured snapshot section key must not be null, empty, or whitespace.");
-                    }
-
-                    if (!string.Equals(contributor.Key, section.Key, StringComparison.Ordinal))
-                    {
-                        throw new InvalidOperationException(
-                            $"Snapshot contributor key {contributor.Key} does not match captured section key {section.Key}.");
-                    }
-
-                    return section;
-                })
-                .ToDictionary(section => section.Key, StringComparer.Ordinal);
-            _snapshotStore.Publish(new SimulationSnapshot(
-                tick,
-                _lastCommandSequence,
-                notices.Snapshot(),
-                sections));
+            throw new ArgumentOutOfRangeException(
+                nameof(realElapsed),
+                realElapsed,
+                "Elapsed time cannot be negative.");
         }
 
-        return new FrameAdvanceResult(
-            dueSteps,
-            _clock.Current,
-            commandResults);
+        BeginAdvance();
+        try
+        {
+            var dueSteps = _clock.Accumulate(realElapsed, rate);
+            var commandResults = new List<CommandResult>();
+
+            for (var index = 0; index < dueSteps; index++)
+            {
+                var tick = _clock.AdvanceOne();
+                var tickResults = _commandBus.DispatchDue(tick);
+                commandResults.AddRange(tickResults);
+                if (tickResults.Count > 0)
+                {
+                    _lastCommandSequence = tickResults.Max(result => result.Sequence);
+                }
+
+                var notices = new SimulationNoticeSink();
+                var context = new SimulationStepContext(
+                    tick,
+                    SimulationClock.StepDuration,
+                    notices);
+                foreach (var system in _systems)
+                {
+                    system.Step(context);
+                }
+
+                var sections = _contributors
+                    .Select(contributor =>
+                    {
+                        var section = contributor.Capture();
+                        if (section is null)
+                        {
+                            throw new InvalidOperationException(
+                                "Snapshot contributor returned null section.");
+                        }
+
+                        if (string.IsNullOrWhiteSpace(section.Key))
+                        {
+                            throw new InvalidOperationException(
+                                "Captured snapshot section key must not be null, empty, or whitespace.");
+                        }
+
+                        if (!string.Equals(contributor.Key, section.Key, StringComparison.Ordinal))
+                        {
+                            throw new InvalidOperationException(
+                                $"Snapshot contributor key {contributor.Key} does not match captured section key {section.Key}.");
+                        }
+
+                        return section;
+                    })
+                    .ToDictionary(section => section.Key, StringComparer.Ordinal);
+                _snapshotStore.Publish(new SimulationSnapshot(
+                    tick,
+                    _lastCommandSequence,
+                    notices.Snapshot(),
+                    sections));
+            }
+
+            var result = new FrameAdvanceResult(
+                dueSteps,
+                _clock.Current,
+                commandResults);
+            CompleteAdvance();
+            return result;
+        }
+        catch
+        {
+            FaultAdvance();
+            throw;
+        }
+    }
+
+    private void BeginAdvance()
+    {
+        lock (_lifecycleGate)
+        {
+            if (_lifecycleState == LifecycleState.Faulted)
+            {
+                throw new InvalidOperationException(FaultedMessage);
+            }
+
+            if (_lifecycleState == LifecycleState.Advancing)
+            {
+                throw new InvalidOperationException(AdvancingMessage);
+            }
+
+            _lifecycleState = LifecycleState.Advancing;
+        }
+    }
+
+    private void CompleteAdvance()
+    {
+        lock (_lifecycleGate)
+        {
+            _lifecycleState = LifecycleState.Idle;
+        }
+    }
+
+    private void FaultAdvance()
+    {
+        lock (_lifecycleGate)
+        {
+            _lifecycleState = LifecycleState.Faulted;
+        }
+    }
+
+    private enum LifecycleState
+    {
+        Idle,
+        Advancing,
+        Faulted
     }
 }
