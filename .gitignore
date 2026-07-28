@@ -1,4 +1,5 @@
 .worktrees/
+.superpowers/
 .tools/
 .godot/
 .vs/
