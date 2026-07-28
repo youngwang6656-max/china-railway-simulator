@@ -1,5 +1,6 @@
 using RailSim.Core.Commands;
 using RailSim.Core.Hosting;
+using RailSim.Core.Query;
 using RailSim.Core.Time;
 using Xunit;
 
@@ -75,6 +76,20 @@ public sealed class SimulationHostTests
                 new ISimulationSystem[] { null! }));
 
         Assert.Equal("systems", exception.ParamName);
+    }
+
+    [Fact]
+    public void NullContributorElementIsRejectedWithClearArgumentError()
+    {
+        var exception = Assert.Throws<ArgumentException>(() =>
+            new SimulationHost(
+                new SimulationClock(),
+                new SimulationCommandBus(),
+                Array.Empty<ISimulationSystem>(),
+                new SnapshotStore(),
+                new ISnapshotContributor[] { null! }));
+
+        Assert.Equal("contributors", exception.ParamName);
     }
 
     [Fact]

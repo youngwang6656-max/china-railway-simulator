@@ -79,6 +79,118 @@ public sealed class SnapshotStoreTests
         Assert.Equal("first", store.GetLatest().Notices[0].Code);
     }
 
+    [Fact]
+    public void SimulationSnapshotRejectsNullNotices()
+    {
+        var exception = Assert.Throws<ArgumentNullException>(() =>
+            new SimulationSnapshot(
+                new SimulationTick(1),
+                0,
+                null!,
+                new Dictionary<string, ISimulationSnapshotSection>()));
+
+        Assert.Equal("notices", exception.ParamName);
+    }
+
+    [Fact]
+    public void SimulationSnapshotRejectsNullSections()
+    {
+        var exception = Assert.Throws<ArgumentNullException>(() =>
+            new SimulationSnapshot(
+                new SimulationTick(1),
+                0,
+                Array.Empty<SimulationNotice>(),
+                null!));
+
+        Assert.Equal("sections", exception.ParamName);
+    }
+
+    [Fact]
+    public void SimulationSnapshotRejectsNullNoticeElements()
+    {
+        var exception = Assert.Throws<ArgumentException>(() =>
+            new SimulationSnapshot(
+                new SimulationTick(1),
+                0,
+                new SimulationNotice[] { null! },
+                new Dictionary<string, ISimulationSnapshotSection>()));
+
+        Assert.Equal("notices", exception.ParamName);
+    }
+
+    [Fact]
+    public void SimulationSnapshotRejectsNullSectionValues()
+    {
+        var exception = Assert.Throws<ArgumentException>(() =>
+            new SimulationSnapshot(
+                new SimulationTick(1),
+                0,
+                Array.Empty<SimulationNotice>(),
+                new Dictionary<string, ISimulationSnapshotSection>
+                {
+                    ["section"] = null!
+                }));
+
+        Assert.Equal("sections", exception.ParamName);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    public void ContributorWithBlankKeyIsRejectedWithClearArgumentError(string? key)
+    {
+        var exception = Assert.Throws<ArgumentException>(() =>
+            CreateHost(new StaticContributor(
+                key!,
+                new CounterSection(1))));
+
+        Assert.Equal("contributors", exception.ParamName);
+    }
+
+    [Fact]
+    public void ContributorReturningNullSectionIsRejectedAsContractViolation()
+    {
+        var host = CreateHost(new StaticContributor("counter", null));
+
+        var exception = Assert.Throws<InvalidOperationException>(() => AdvanceOneTick(host));
+
+        Assert.Contains("returned null", exception.Message);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    public void ContributorReturningSectionWithBlankKeyIsRejectedAsContractViolation(
+        string? key)
+    {
+        var host = CreateHost(new StaticContributor(
+            "counter",
+            new NamedSection(key!)));
+
+        var exception = Assert.Throws<InvalidOperationException>(() => AdvanceOneTick(host));
+
+        Assert.Contains("must not be null, empty, or whitespace", exception.Message);
+    }
+
+    private static SimulationHost CreateHost(ISnapshotContributor contributor)
+    {
+        return new SimulationHost(
+            new SimulationClock(),
+            new SimulationCommandBus(),
+            Array.Empty<ISimulationSystem>(),
+            new SnapshotStore(),
+            new[] { contributor });
+    }
+
+    private static void AdvanceOneTick(SimulationHost host)
+    {
+        host.AdvanceFrame(
+            TimeSpan.FromMilliseconds(250),
+            SimulationRate.FromPreset(SimulationSpeedPreset.Normal));
+    }
+
     private sealed class CounterState
     {
         public int Value { get; set; }
@@ -112,6 +224,20 @@ public sealed class SnapshotStoreTests
     private sealed record CounterSection(int Value) : ISimulationSnapshotSection
     {
         public string Key => "counter";
+    }
+
+    private sealed record NamedSection(string Key) : ISimulationSnapshotSection;
+
+    private sealed class StaticContributor(
+        string key,
+        ISimulationSnapshotSection? section) : ISnapshotContributor
+    {
+        public string Key => key;
+
+        public ISimulationSnapshotSection Capture()
+        {
+            return section!;
+        }
     }
 
     private sealed class CounterContributor(CounterState state)

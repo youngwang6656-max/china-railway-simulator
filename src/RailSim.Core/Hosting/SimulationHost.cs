@@ -56,7 +56,23 @@ public sealed class SimulationHost
             .OrderBy(system => system.Order)
             .ToArray();
 
-        _contributors = contributors.ToArray();
+        var registeredContributors = contributors.ToArray();
+        if (registeredContributors.Any(contributor => contributor is null))
+        {
+            throw new ArgumentException(
+                "Snapshot contributors cannot contain null elements.",
+                nameof(contributors));
+        }
+
+        if (registeredContributors.Any(contributor =>
+                string.IsNullOrWhiteSpace(contributor.Key)))
+        {
+            throw new ArgumentException(
+                "Snapshot contributor keys must not be null, empty, or whitespace.",
+                nameof(contributors));
+        }
+
+        _contributors = registeredContributors;
 
         var duplicateOrder = _systems
             .GroupBy(system => system.Order)
@@ -117,6 +133,18 @@ public sealed class SimulationHost
                 .Select(contributor =>
                 {
                     var section = contributor.Capture();
+                    if (section is null)
+                    {
+                        throw new InvalidOperationException(
+                            "Snapshot contributor returned null section.");
+                    }
+
+                    if (string.IsNullOrWhiteSpace(section.Key))
+                    {
+                        throw new InvalidOperationException(
+                            "Captured snapshot section key must not be null, empty, or whitespace.");
+                    }
+
                     if (!string.Equals(contributor.Key, section.Key, StringComparison.Ordinal))
                     {
                         throw new InvalidOperationException(
