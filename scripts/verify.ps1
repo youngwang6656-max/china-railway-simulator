@@ -1,14 +1,22 @@
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$localDotnet = Join-Path $repoRoot '.tools\dotnet\dotnet.exe'
+$toolsRoot = Join-Path $repoRoot '.tools'
+$logsRoot = Join-Path $toolsRoot 'logs'
+$testResultsRoot = Join-Path $toolsRoot 'test-results'
+$gamePath = Join-Path $repoRoot 'game'
+New-Item -ItemType Directory -Force -Path $toolsRoot, $logsRoot, $testResultsRoot |
+    Out-Null
+
+$localDotnet = Join-Path $toolsRoot 'dotnet\dotnet.exe'
 $dotnet = if (Test-Path $localDotnet) {
     $localDotnet
 } else {
     (Get-Command dotnet -ErrorAction Stop).Source
 }
+$dotnet = (Resolve-Path $dotnet).Path
 
-$localGodot = Get-ChildItem (Join-Path $repoRoot '.tools\godot') `
+$localGodot = Get-ChildItem (Join-Path $toolsRoot 'godot') `
     -Recurse `
     -Filter 'Godot*v4.6.3*mono*win64*.exe' `
     -ErrorAction SilentlyContinue |
@@ -25,6 +33,22 @@ $godot = if ($null -ne $localGodot) {
     $command.Source
 }
 $godot = (Resolve-Path $godot).Path
+
+$dotnetVersion = (& $dotnet --version 2>&1 | Out-String).Trim()
+if ($LASTEXITCODE -ne 0) {
+    throw "dotnet --version failed with exit code $LASTEXITCODE"
+}
+if ($dotnetVersion -notmatch '^8\.[0-9]+\.[0-9]+(?:[-+].*)?$') {
+    throw "Expected .NET SDK 8.x, but found '$dotnetVersion'."
+}
+
+$godotVersion = (& $godot --version 2>&1 | Out-String).Trim()
+if ($LASTEXITCODE -ne 0) {
+    throw "Godot --version failed with exit code $LASTEXITCODE"
+}
+if ($godotVersion -notmatch '^4\.6\.3\.stable\.mono(?:\..+)?$') {
+    throw "Expected Godot 4.6.3 stable .NET, but found '$godotVersion'."
+}
 
 Push-Location $repoRoot
 try {
@@ -43,19 +67,71 @@ try {
         throw "dotnet build failed"
     }
 
+    $testRunName = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ') +
+        '-' + [Guid]::NewGuid().ToString('N')
+    $testRunRoot = Join-Path $testResultsRoot $testRunName
+    New-Item -ItemType Directory -Force -Path $testRunRoot | Out-Null
+
     & $dotnet test RailSim.sln --configuration Release --no-build `
+        --results-directory $testRunRoot `
+        --logger 'trx;LogFileName=verification.trx' `
         --collect:"XPlat Code Coverage"
     if ($LASTEXITCODE -ne 0) {
         throw "dotnet test failed"
     }
 
-    $smokeLog = Join-Path $repoRoot '.tools\godot-smoke.log'
-    $smokeStdout = Join-Path $repoRoot '.tools\godot-smoke.stdout.log'
-    $smokeStderr = Join-Path $repoRoot '.tools\godot-smoke.stderr.log'
+    $trxFiles = @(Get-ChildItem $testRunRoot -Recurse -Filter '*.trx' -File)
+    if ($trxFiles.Count -ne 1) {
+        throw "Expected exactly one TRX file, but found $($trxFiles.Count)."
+    }
+
+    [xml]$trx = Get-Content -Raw -Encoding UTF8 $trxFiles[0].FullName
+    $counters = $trx.TestRun.ResultSummary.Counters
+    if ($null -eq $counters) {
+        throw "TRX result counters are missing."
+    }
+
+    $totalTests = [int]$counters.total
+    $passedTests = [int]$counters.passed
+    $failedTests = [int]$counters.failed
+    if ($failedTests -ne 0 -or $totalTests -lt 50 -or $passedTests -lt 50) {
+        throw "Invalid test totals: total=$totalTests passed=$passedTests failed=$failedTests."
+    }
+
+    $coverageFiles = @(
+        Get-ChildItem $testRunRoot -Recurse -Filter 'coverage.cobertura.xml' -File
+    )
+    if ($coverageFiles.Count -lt 1) {
+        throw "Expected at least one coverage.cobertura.xml in the current test run."
+    }
+
+    $linesValid = 0
+    $linesCovered = 0
+    foreach ($coverageFile in $coverageFiles) {
+        [xml]$coverage = Get-Content -Raw -Encoding UTF8 $coverageFile.FullName
+        if ($null -eq $coverage.coverage) {
+            throw "Cobertura root element is missing in $($coverageFile.FullName)."
+        }
+
+        $currentLinesValid = [int]$coverage.coverage.'lines-valid'
+        $currentLinesCovered = [int]$coverage.coverage.'lines-covered'
+        if ($currentLinesValid -le 0 -or $currentLinesCovered -le 0) {
+            throw "Invalid coverage totals in $($coverageFile.FullName): " +
+                "lines-valid=$currentLinesValid lines-covered=$currentLinesCovered."
+        }
+
+        $linesValid = [Math]::Max($linesValid, $currentLinesValid)
+        $linesCovered = [Math]::Max($linesCovered, $currentLinesCovered)
+    }
+
+    $smokeLog = Join-Path $logsRoot 'godot-smoke.log'
+    $smokeStdout = Join-Path $logsRoot 'godot-smoke.stdout.log'
+    $smokeStderr = Join-Path $logsRoot 'godot-smoke.stderr.log'
     $smokeStartInfo = [System.Diagnostics.ProcessStartInfo]::new()
     $smokeStartInfo.FileName = $godot
     $smokeStartInfo.Arguments =
-        "--headless --log-file `"$smokeLog`" --path game -- --smoke-test"
+        "--headless --log-file `"$smokeLog`" --path `"$gamePath`" -- --smoke-test"
+    $smokeStartInfo.WorkingDirectory = $repoRoot
     $smokeStartInfo.UseShellExecute = $false
     $smokeStartInfo.CreateNoWindow = $true
     $smokeStartInfo.RedirectStandardOutput = $true
@@ -63,11 +139,10 @@ try {
     $smokeProcess = [System.Diagnostics.Process]::Start($smokeStartInfo)
     $stdoutTask = $smokeProcess.StandardOutput.ReadToEndAsync()
     $stderrTask = $smokeProcess.StandardError.ReadToEndAsync()
+    $smokeTimedOut = -not $smokeProcess.WaitForExit(30000)
 
-    if (-not $smokeProcess.WaitForExit(30000)) {
-        Stop-Process -Id $smokeProcess.Id -Force
-        $smokeProcess.WaitForExit()
-        throw "Godot smoke test timed out after 30 seconds."
+    if ($smokeTimedOut) {
+        $smokeProcess.Kill()
     }
 
     $smokeProcess.WaitForExit()
@@ -75,6 +150,9 @@ try {
         $stderrTask.GetAwaiter().GetResult()
     [System.IO.File]::WriteAllText($smokeStdout, $stdoutTask.Result)
     [System.IO.File]::WriteAllText($smokeStderr, $stderrTask.Result)
+    if ($smokeTimedOut) {
+        throw "Godot smoke test timed out after 30 seconds."
+    }
     if ($smokeProcess.ExitCode -ne 0) {
         throw "Godot smoke test exited with $($smokeProcess.ExitCode).`n$smokeOutput"
     }
@@ -82,6 +160,10 @@ try {
         throw "Godot smoke marker missing.`n$smokeOutput"
     }
 
+    Write-Host "TOOLCHAIN_OK dotnet=$dotnetVersion godot=$godotVersion"
+    Write-Host "TESTS_OK total=$totalTests passed=$passedTests failed=$failedTests"
+    Write-Host "COVERAGE_OK lines-valid=$linesValid lines-covered=$linesCovered"
+    Write-Host 'GODOT_SMOKE_OK tick=4'
     Write-Host 'VERIFY_OK'
 } finally {
     Pop-Location
