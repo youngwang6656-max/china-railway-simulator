@@ -66,6 +66,18 @@ public sealed class SimulationHostTests
     }
 
     [Fact]
+    public void NullSystemElementIsRejectedWithClearArgumentError()
+    {
+        var exception = Assert.Throws<ArgumentException>(() =>
+            new SimulationHost(
+                new SimulationClock(),
+                new SimulationCommandBus(),
+                new ISimulationSystem[] { null! }));
+
+        Assert.Equal("systems", exception.ParamName);
+    }
+
+    [Fact]
     public void PausedFrameDoesNotRunCommandsOrSystems()
     {
         var events = new List<string>();

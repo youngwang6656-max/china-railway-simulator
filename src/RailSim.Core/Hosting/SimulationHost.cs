@@ -23,7 +23,15 @@ public sealed class SimulationHost
         _commandBus = commandBus ?? throw new ArgumentNullException(nameof(commandBus));
         ArgumentNullException.ThrowIfNull(systems);
 
-        _systems = systems
+        var registeredSystems = systems.ToArray();
+        if (registeredSystems.Any(system => system is null))
+        {
+            throw new ArgumentException(
+                "Simulation systems cannot contain null elements.",
+                nameof(systems));
+        }
+
+        _systems = registeredSystems
             .OrderBy(system => system.Order)
             .ToArray();
 
