@@ -105,6 +105,79 @@ public sealed class SimulationCommandBusTests
         Assert.Equal("handler.missing", results[1].Code);
     }
 
+    [Fact]
+    public void WritablePropertyCommandIsRejectedWithoutChangingSequenceOrLog()
+    {
+        var bus = new SimulationCommandBus();
+
+        var exception = Assert.Throws<ArgumentException>(() =>
+            bus.Enqueue(new WritablePropertyCommand(), new SimulationTick(1)));
+
+        Assert.Equal("command", exception.ParamName);
+        Assert.Empty(bus.ExportLog());
+        var accepted = bus.Enqueue(new UnknownCommand(), new SimulationTick(1));
+        Assert.Equal(1, accepted.Sequence);
+        Assert.Equal(new[] { accepted }, bus.ExportLog());
+    }
+
+    [Fact]
+    public void RecordContainingListIsRejected()
+    {
+        var bus = new SimulationCommandBus();
+
+        var exception = Assert.Throws<ArgumentException>(() =>
+            bus.Enqueue(
+                new ListCommand(["mutable"]),
+                new SimulationTick(1)));
+
+        Assert.Equal("command", exception.ParamName);
+    }
+
+    [Fact]
+    public void RecordContainingArrayIsRejected()
+    {
+        var bus = new SimulationCommandBus();
+
+        var exception = Assert.Throws<ArgumentException>(() =>
+            bus.Enqueue(
+                new ArrayCommand(["mutable"]),
+                new SimulationTick(1)));
+
+        Assert.Equal("command", exception.ParamName);
+    }
+
+    [Fact]
+    public void RecordContainingNestedMutableObjectIsRejected()
+    {
+        var bus = new SimulationCommandBus();
+
+        var exception = Assert.Throws<ArgumentException>(() =>
+            bus.Enqueue(
+                new NestedMutableCommand(new MutableDetails()),
+                new SimulationTick(1)));
+
+        Assert.Equal("command", exception.ParamName);
+    }
+
+    [Fact]
+    public void ImmutableCommandsRemainAcceptedOrderedDispatchedAndLogged()
+    {
+        var bus = new SimulationCommandBus();
+        bus.Enqueue(new AppendCommand("string"), new SimulationTick(2));
+        bus.Enqueue(new UnknownCommand(), new SimulationTick(2));
+        bus.Enqueue(
+            new CompositeCommand(
+                42,
+                new ImmutableValue(new SimulationTick(1), TimeSpan.FromSeconds(3))),
+            new SimulationTick(1));
+
+        var results = bus.DispatchDue(new SimulationTick(2));
+        var log = bus.ExportLog();
+
+        Assert.Equal(new long[] { 3, 1, 2 }, results.Select(result => result.Sequence));
+        Assert.Equal(new long[] { 1, 2, 3 }, log.Select(item => item.Sequence));
+    }
+
     private sealed record AppendCommand(string Value) : ISimulationCommand;
 
     private sealed record UnknownCommand : ISimulationCommand;
@@ -112,6 +185,30 @@ public sealed class SimulationCommandBusTests
     private sealed record BlockingCommand : ISimulationCommand;
 
     private sealed record LateRegisteredCommand : ISimulationCommand;
+
+    private sealed record WritablePropertyCommand : ISimulationCommand
+    {
+        public int Value { get; set; }
+    }
+
+    private sealed record ListCommand(List<string> Values) : ISimulationCommand;
+
+    private sealed record ArrayCommand(string[] Values) : ISimulationCommand;
+
+    private sealed record NestedMutableCommand(MutableDetails Details) : ISimulationCommand;
+
+    private sealed record CompositeCommand(
+        int Count,
+        ImmutableValue Value) : ISimulationCommand;
+
+    private readonly record struct ImmutableValue(
+        SimulationTick Tick,
+        TimeSpan Offset);
+
+    private sealed class MutableDetails
+    {
+        public int Value { get; set; }
+    }
 
     private sealed class AppendHandler(List<string> values)
         : CommandHandler<AppendCommand>

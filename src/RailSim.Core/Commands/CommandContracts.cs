@@ -2,6 +2,14 @@ using RailSim.Core.Time;
 
 namespace RailSim.Core.Commands;
 
+/// <summary>
+/// Marks a payload that may enter the simulation only at a command boundary.
+/// </summary>
+/// <remarks>
+/// Implementations must be deeply immutable: sealed reference types or readonly
+/// value types whose complete instance state is recursively immutable. The
+/// command bus validates this contract before retaining a payload.
+/// </remarks>
 public interface ISimulationCommand;
 
 public enum CommandStatus
@@ -28,6 +36,16 @@ public sealed record CommandDecision(
     }
 }
 
+/// <summary>
+/// Associates a validated command payload with its deterministic sequence and
+/// scheduled simulation tick.
+/// </summary>
+/// <remarks>
+/// Envelopes emitted by <see cref="SimulationCommandBus"/> retain payload
+/// references safely because the payload type passed structural deep-immutability
+/// validation at enqueue time. Callers constructing envelopes directly remain
+/// responsible for satisfying the <see cref="ISimulationCommand"/> contract.
+/// </remarks>
 public sealed record CommandEnvelope(
     long Sequence,
     SimulationTick ExecuteAt,

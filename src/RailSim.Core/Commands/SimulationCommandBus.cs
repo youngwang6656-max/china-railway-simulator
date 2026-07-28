@@ -37,6 +37,8 @@ public sealed class SimulationCommandBus
                 "Commands must execute at tick 1 or later.");
         }
 
+        ImmutableCommandTypeValidator.EnsureImmutable(command);
+
         lock (_gate)
         {
             var envelope = new CommandEnvelope(
