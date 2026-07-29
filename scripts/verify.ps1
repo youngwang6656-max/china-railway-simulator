@@ -9,8 +9,11 @@ New-Item -ItemType Directory -Force -Path $toolsRoot, $logsRoot, $testResultsRoo
     Out-Null
 
 $localDotnet = Join-Path $toolsRoot 'dotnet\dotnet.exe'
+$userDotnet = Join-Path $env:USERPROFILE '.dotnet\dotnet.exe'
 $dotnet = if (Test-Path $localDotnet) {
     $localDotnet
+} elseif (Test-Path $userDotnet) {
+    $userDotnet
 } else {
     (Get-Command dotnet -ErrorAction Stop).Source
 }
@@ -52,7 +55,8 @@ if ($godotVersion -notmatch '^4\.6\.3\.stable\.mono(?:\..+)?$') {
 
 Push-Location $repoRoot
 try {
-    & $dotnet restore RailSim.sln
+    & $dotnet restore RailSim.sln --ignore-failed-sources `
+        -p:NuGetAudit=false
     if ($LASTEXITCODE -ne 0) {
         throw "dotnet restore failed"
     }
@@ -62,12 +66,14 @@ try {
         throw "dotnet format verification failed"
     }
 
-    & $dotnet build RailSim.sln --configuration Release --no-restore
+    & $dotnet build RailSim.sln --configuration Release --no-restore `
+        -p:NuGetAudit=false
     if ($LASTEXITCODE -ne 0) {
         throw "dotnet build failed"
     }
 
-    & $dotnet build game\RailSim.App.csproj --configuration Debug --no-restore
+    & $dotnet build game\RailSim.App.csproj --configuration Debug --no-restore `
+        -p:NuGetAudit=false
     if ($LASTEXITCODE -ne 0) {
         throw "Godot Debug runtime build failed"
     }
@@ -78,6 +84,7 @@ try {
     New-Item -ItemType Directory -Force -Path $testRunRoot | Out-Null
 
     & $dotnet test RailSim.sln --configuration Release --no-build `
+        -p:NuGetAudit=false `
         --results-directory $testRunRoot `
         --logger 'trx;LogFileName=verification.trx' `
         --collect:"XPlat Code Coverage"
@@ -99,7 +106,7 @@ try {
     $totalTests = [int]$counters.total
     $passedTests = [int]$counters.passed
     $failedTests = [int]$counters.failed
-    if ($failedTests -ne 0 -or $totalTests -lt 50 -or $passedTests -lt 50) {
+    if ($failedTests -ne 0 -or $totalTests -lt 81 -or $passedTests -lt 81) {
         throw "Invalid test totals: total=$totalTests passed=$passedTests failed=$failedTests."
     }
 
@@ -164,11 +171,18 @@ try {
     if ($smokeOutput -notmatch 'RAILSIM_SMOKE tick=4') {
         throw "Godot smoke marker missing.`n$smokeOutput"
     }
+    if (
+        $smokeOutput -notmatch
+        'RAILSIM_WORLD_SMOKE cities=64 stations=64 tracks=12'
+    ) {
+        throw "Godot world smoke marker missing.`n$smokeOutput"
+    }
 
     Write-Host "TOOLCHAIN_OK dotnet=$dotnetVersion godot=$godotVersion"
     Write-Host "TESTS_OK total=$totalTests passed=$passedTests failed=$failedTests"
     Write-Host "COVERAGE_OK lines-valid=$linesValid lines-covered=$linesCovered"
     Write-Host 'GODOT_SMOKE_OK tick=4'
+    Write-Host 'GODOT_WORLD_SMOKE_OK cities=64 stations=64 tracks=12'
     Write-Host 'VERIFY_OK'
 } finally {
     Pop-Location

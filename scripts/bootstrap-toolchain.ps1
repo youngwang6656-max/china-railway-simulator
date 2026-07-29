@@ -8,7 +8,15 @@ $downloadRoot = Join-Path $toolsRoot 'downloads'
 
 New-Item -ItemType Directory -Force -Path $dotnetRoot, $godotRoot, $downloadRoot | Out-Null
 
-$dotnetExe = Join-Path $dotnetRoot 'dotnet.exe'
+$localDotnetExe = Join-Path $dotnetRoot 'dotnet.exe'
+$userDotnetExe = Join-Path $env:USERPROFILE '.dotnet\dotnet.exe'
+$dotnetExe = if (Test-Path $localDotnetExe) {
+    $localDotnetExe
+} elseif (Test-Path $userDotnetExe) {
+    $userDotnetExe
+} else {
+    $localDotnetExe
+}
 if (-not (Test-Path $dotnetExe)) {
     $installer = Join-Path $downloadRoot 'dotnet-install.ps1'
     Invoke-WebRequest 'https://dot.net/v1/dotnet-install.ps1' `
@@ -22,6 +30,8 @@ if (-not (Test-Path $dotnetExe)) {
     if ($LASTEXITCODE -ne 0) {
         throw ".NET SDK installation failed with exit code $LASTEXITCODE"
     }
+
+    $dotnetExe = $localDotnetExe
 }
 
 $godotExe = Get-ChildItem -Path $godotRoot -Recurse -Filter 'Godot*v4.6.3*mono*win64*.exe' |
@@ -38,7 +48,7 @@ if ($null -eq $godotExe) {
 }
 
 if (-not (Test-Path $dotnetExe)) {
-    throw "Missing local .NET SDK at $dotnetExe"
+    throw "Missing .NET SDK at $dotnetExe"
 }
 if ($null -eq $godotExe) {
     throw "Missing Godot 4.6.3 .NET executable under $godotRoot"
@@ -46,7 +56,7 @@ if ($null -eq $godotExe) {
 
 $dotnetVersion = (& $dotnetExe --version 2>&1 | Out-String).Trim()
 if ($LASTEXITCODE -ne 0) {
-    throw "Local dotnet --version failed"
+    throw "dotnet --version failed"
 }
 if ($dotnetVersion -notmatch '^8\.[0-9]+\.[0-9]+(?:[-+].*)?$') {
     throw "Expected .NET SDK 8.x, but found '$dotnetVersion'."
