@@ -8,7 +8,10 @@ Godot 2D 宏观地图编辑器，以及与界面解耦的纯 C# 确定性领域�
 - 由种子确定性生成约 `1000 × 800 km` 的大区级世界。
 - 显示量化地形、主要河流、64 个四级城市与 64 个独立车站锚点。
 - 地图平移、缩放与区域/线路/编辑三级 LOD。
-- 一笔绘制上下行两股独立物理轨道，控制点自动平滑并可拖动。
+- 连续绘制上下行两股独立物理轨道；鼠标移动即显示与最终提交一致的
+  平滑幽灵双轨，控制点可逐点确认、回退和拖动。
+- 节点、车站、既有轨道拆分点与角度引导按确定性优先级吸附；预览实时显示
+  分段/总长度、最小估算半径、预计限速与纵断面待设计状态。
 - 将联络线吸附到既有节点，并循环选择明确的双向互通方案。
 - 既有双线可载入草案并原子改线，端点锁定且稳定 ID 保持不变。
 - 框选、删除控制点、原子删除线路、轨道拆分和互通断开；所有操作均可撤销。
@@ -56,8 +59,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1
 操作方式：
 
 - 鼠标滚轮：缩放。
-- 鼠标中键或右键拖动：平移。
-- “绘制双线”模式下左键：添加控制点；拖动已有橙色点可调整。
+- 鼠标中键拖动：始终平移；未绘线时也可使用右键拖动平移。
+- “绘制双线”模式下左键：确认当前幽灵点并连续绘制；拖动已有橙色点可调整。
+- 绘线时右键：撤回最后一个确认点；只剩起点时再次右键取消草案。
+- 绘线时按住 Shift：临时关闭节点、车站、轨道与角度吸附。
 - “绘制联络线”模式：两端吸附既有节点；“切换互通方案”选择要开放的
   四个明确行车方向。
 - “既有线改线”模式：先点击双线区段载入草案；端点锁定，拖动已有控制点
@@ -77,7 +82,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1
 ```
 
-脚本离线友好地执行格式、Release/Debug 构建、128 项以上测试、75% 覆盖率门，
+脚本离线友好地执行格式、Release/Debug 构建、152 项以上测试、75% 覆盖率门，
 并真正实例化地图 UI 完成三帧 Godot 无界面冒烟。成功结尾应包含：
 
 ```text
@@ -91,6 +96,7 @@ GODOT_REPLACEMENT_SMOKE_OK current=True
 GODOT_MANUAL_WARNING_SMOKE_OK confirmed=True
 GODOT_MANUAL_CONNECTOR_SMOKE_OK built=True
 GODOT_EDIT_TOOLS_SMOKE_OK complete=True
+GODOT_DRAWING_FEEL_SMOKE_OK complete=True
 VERIFY_OK
 ```
 
