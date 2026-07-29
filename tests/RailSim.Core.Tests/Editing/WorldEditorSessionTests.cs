@@ -201,6 +201,25 @@ public sealed class WorldEditorSessionTests
         Assert.True(store.SaveCount >= 2);
     }
 
+    [Fact]
+    public void PatchCannotOmitCanonicalAffectedChunks()
+    {
+        var session = CreateSession();
+        var invalid = MainLinePatch("missing-chunks") with
+        {
+            AffectedChunks = []
+        };
+
+        var result = session.Apply(invalid, session.Revision);
+
+        Assert.Equal(CommandStatus.Rejected, result.Status);
+        Assert.Equal(
+            "rail.patch.affected_chunks_incomplete",
+            result.Code);
+        Assert.Empty(session.World.RailTopology.Tracks);
+        Assert.False(session.CanUndo);
+    }
+
     private static WorldEditorSession CreateSession(
         IEditHistoryStore? historyStore = null)
     {

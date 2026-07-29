@@ -52,6 +52,22 @@ public sealed class RailEditValidator : IRailEditValidator
                     world.Revision,
                     world.BaseWorld,
                     candidate));
+            var requiredChunks =
+                patch.CalculateRequiredAffectedChunks(
+                    world.RailTopology,
+                    candidate,
+                    world.BaseWorld.Parameters.ChunkSizeMeters);
+            var declaredChunks = patch.AffectedChunks.ToHashSet();
+            if (requiredChunks.Any(
+                    chunk => !declaredChunks.Contains(chunk)))
+            {
+                issues.Add(new RailValidationIssue(
+                    "rail.patch.affected_chunks_incomplete",
+                    RailValidationSeverity.Error,
+                    null,
+                    null));
+                return new RailValidationResult(issues.ToImmutable());
+            }
         }
         catch (Exception exception)
             when (exception is InvalidDataException or

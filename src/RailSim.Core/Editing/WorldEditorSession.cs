@@ -115,7 +115,12 @@ public sealed class WorldEditorSession : ISnapshotContributor
                 resultRevision,
                 _world.BaseWorld,
                 candidate,
-                patch.ToChangeSet(_world.Revision, resultRevision));
+                patch.ToChangeSet(
+                    _world.RailTopology,
+                    candidate,
+                    _world.BaseWorld.Parameters.ChunkSizeMeters,
+                    _world.Revision,
+                    resultRevision));
             _undo.Push(patch.Invert());
             _redo.Clear();
             PersistHistory();
@@ -147,7 +152,12 @@ public sealed class WorldEditorSession : ISnapshotContributor
                 resultRevision,
                 _world.BaseWorld,
                 candidate,
-                patch.ToChangeSet(_world.Revision, resultRevision));
+                patch.ToChangeSet(
+                    _world.RailTopology,
+                    candidate,
+                    _world.BaseWorld.Parameters.ChunkSizeMeters,
+                    _world.Revision,
+                    resultRevision));
             _redo.Push(patch.Invert());
             PersistHistory();
             return CommandDecision.Accept();
@@ -178,7 +188,12 @@ public sealed class WorldEditorSession : ISnapshotContributor
                 resultRevision,
                 _world.BaseWorld,
                 candidate,
-                patch.ToChangeSet(_world.Revision, resultRevision));
+                patch.ToChangeSet(
+                    _world.RailTopology,
+                    candidate,
+                    _world.BaseWorld.Parameters.ChunkSizeMeters,
+                    _world.Revision,
+                    resultRevision));
             _undo.Push(patch.Invert());
             PersistHistory();
             return CommandDecision.Accept();

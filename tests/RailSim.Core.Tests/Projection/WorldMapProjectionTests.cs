@@ -232,6 +232,9 @@ public sealed class WorldMapProjectionTests
                 world.BaseWorld.Parameters.ChunkSizeMeters);
         var candidate = patch.ApplyTo(world.RailTopology);
         var change = patch.ToChangeSet(
+            world.RailTopology,
+            candidate,
+            world.BaseWorld.Parameters.ChunkSizeMeters,
             world.Revision,
             world.Revision + 1);
         var incremental = RailSpatialIndex

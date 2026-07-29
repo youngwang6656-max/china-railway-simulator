@@ -217,6 +217,94 @@ public sealed class RailTopologyEditStrategy
         };
     }
 
+    public RailGraphPatch CreateRealignPatch(
+        RailTopology topology,
+        StableId targetTrackId,
+        AlignmentDraft draft,
+        int chunkSizeMeters)
+    {
+        ArgumentNullException.ThrowIfNull(topology);
+        ArgumentNullException.ThrowIfNull(draft);
+        EnsureChunkSize(chunkSizeMeters);
+        if (!topology.Tracks.TryGetValue(targetTrackId, out var target))
+        {
+            throw new ArgumentException(
+                $"Track {targetTrackId} does not exist.",
+                nameof(targetTrackId));
+        }
+
+        var originalAlignment = topology.Alignments[target.AlignmentId];
+        if (draft.SampledPoints[0] !=
+                originalAlignment.ControlPoints[0] ||
+            draft.SampledPoints[^1] !=
+                originalAlignment.ControlPoints[^1])
+        {
+            throw new ArgumentException(
+                "Realignment must preserve both topology boundary positions.",
+                nameof(draft));
+        }
+
+        var tracks = topology.Tracks.Values
+            .Where(
+                track =>
+                    track.AlignmentId == originalAlignment.Id)
+            .OrderBy(track => track.Id)
+            .ToImmutableArray();
+        if (tracks.Length != 2)
+        {
+            throw new InvalidOperationException(
+                "Realignment requires one opposing physical track pair.");
+        }
+
+        var trackIds = tracks
+            .Select(track => track.Id)
+            .ToImmutableHashSet();
+        var groups = topology.TrackGroups.Values
+            .Where(group => group.TrackIds.Any(trackIds.Contains))
+            .OrderBy(group => group.Id)
+            .ToImmutableArray();
+        var connections = topology.Connections.Values
+            .Where(
+                connection =>
+                    trackIds.Contains(connection.FromTrackId) ||
+                    trackIds.Contains(connection.ToTrackId))
+            .OrderBy(connection => connection.Id)
+            .ToImmutableArray();
+        var replacementAlignment = new Alignment(
+            originalAlignment.Id,
+            draft.SampledPoints,
+            CalculateLength(draft.SampledPoints));
+        var padding = tracks.Max(
+            track =>
+                Math.Abs((long)track.LateralOffsetMillimeters));
+        var affectedChunks = WorldChunkCoverage.TracePolyline(
+                originalAlignment.ControlPoints,
+                chunkSizeMeters,
+                padding)
+            .AddRange(
+                WorldChunkCoverage.TracePolyline(
+                    replacementAlignment.ControlPoints,
+                    chunkSizeMeters,
+                    padding))
+            .Distinct()
+            .OrderBy(chunk => chunk.X)
+            .ThenBy(chunk => chunk.Y)
+            .ToImmutableArray();
+        return new RailGraphPatch
+        {
+            Intent = RailEditIntent.Realign,
+            AffectedChunks = affectedChunks,
+            RemovedAlignments = [originalAlignment],
+            RemovedTracks = tracks,
+            RemovedTrackGroups = groups,
+            RemovedConnections = connections,
+            AddedAlignments = [replacementAlignment],
+            AddedTracks = tracks,
+            AddedTrackGroups = groups,
+            AddedConnections = connections
+        };
+    }
+
     public RailGraphPatch CreateSplitPatch(
         RailTopology topology,
         StableId targetTrackId,

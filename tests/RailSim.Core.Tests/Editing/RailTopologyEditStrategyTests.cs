@@ -42,6 +42,56 @@ public sealed class RailTopologyEditStrategyTests
     }
 
     [Fact]
+    public void RealignIsAtomicReversibleAndPreservesStableRailIdentities()
+    {
+        var world = CreateWorld();
+        var topology = world.RailTopology;
+        var group = Assert.Single(topology.TrackGroups.Values);
+        var target = topology.Tracks[group.TrackIds[0]];
+        var original = topology.Alignments[target.AlignmentId];
+        var midpoint = original.ControlPoints[
+            original.ControlPoints.Length / 2];
+        var shifted = midpoint.OffsetMillimeters(0, 8_000_000);
+        var draft = new ControlPointSplineStrategy().Build(
+            ImmutableArray.Create(
+                new DraftWaypoint(original.ControlPoints[0], null),
+                new DraftWaypoint(shifted, null),
+                new DraftWaypoint(original.ControlPoints[^1], null)));
+        var strategy = new RailTopologyEditStrategy(
+            new DeterministicStableIdSource("realign-unused"));
+
+        var patch = strategy.CreateRealignPatch(
+            topology,
+            target.Id,
+            draft,
+            chunkSizeMeters: 64_000);
+        var candidate = patch.ApplyTo(topology);
+        var restored = patch.Invert().ApplyTo(candidate);
+
+        Assert.Equal(topology.Nodes.Keys, candidate.Nodes.Keys);
+        Assert.Equal(topology.Ports.Keys, candidate.Ports.Keys);
+        Assert.Equal(topology.Tracks.Keys, candidate.Tracks.Keys);
+        Assert.Equal(topology.TrackGroups.Keys, candidate.TrackGroups.Keys);
+        Assert.Equal(topology.Connections.Keys, candidate.Connections.Keys);
+        Assert.Equal(topology.Alignments.Keys, candidate.Alignments.Keys);
+        Assert.Equal(
+            draft.SampledPoints,
+            candidate.Alignments[original.Id].ControlPoints);
+        Assert.NotEqual(
+            original.ControlPoints,
+            candidate.Alignments[original.Id].ControlPoints);
+        Assert.Contains(
+            WorldChunkId.FromPoint(
+                shifted,
+                chunkSizeMeters: 64_000),
+            patch.AffectedChunks);
+        Assert.Equal(
+            WorldContentHasher.HashState(world),
+            WorldContentHasher.HashState(
+                new WorldState(0, world.BaseWorld, restored)));
+    }
+
+    [Fact]
     public void DeletingSelectedCorridorLeavesNoDanglingRailReferences()
     {
         var world = CreateWorld();

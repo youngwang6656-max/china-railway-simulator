@@ -8,6 +8,7 @@ public enum RailEditIntent
     Custom,
     DoubleTrackCorridor,
     Connector,
+    Realign,
     Composite
 }
 
@@ -191,9 +192,14 @@ public sealed record RailGraphPatch
     }
 
     public RailTopologyChangeSet ToChangeSet(
+        RailTopology before,
+        RailTopology after,
+        int chunkSizeMeters,
         long baseRevision,
         long resultRevision)
     {
+        ArgumentNullException.ThrowIfNull(before);
+        ArgumentNullException.ThrowIfNull(after);
         if (baseRevision < 0 ||
             resultRevision != checked(baseRevision + 1))
         {
@@ -203,7 +209,15 @@ public sealed record RailGraphPatch
         return new RailTopologyChangeSet(
             baseRevision,
             resultRevision,
-            AffectedChunks,
+            CalculateRequiredAffectedChunks(
+                    before,
+                    after,
+                    chunkSizeMeters)
+                .AddRange(AffectedChunks)
+                .Distinct()
+                .OrderBy(chunk => chunk.X)
+                .ThenBy(chunk => chunk.Y)
+                .ToImmutableArray(),
             RemovedNodes.Select(item => item.Id).ToImmutableHashSet(),
             RemovedPorts.Select(item => item.Id).ToImmutableHashSet(),
             RemovedTracks.Select(item => item.Id).ToImmutableHashSet(),
@@ -214,6 +228,193 @@ public sealed record RailGraphPatch
             AddedTracks.Select(item => item.Id).ToImmutableHashSet(),
             AddedTrackGroups.Select(item => item.Id).ToImmutableHashSet(),
             AddedConnections.Select(item => item.Id).ToImmutableHashSet());
+    }
+
+    public ImmutableArray<World.WorldChunkId>
+        CalculateRequiredAffectedChunks(
+            RailTopology before,
+            RailTopology after,
+            int chunkSizeMeters)
+    {
+        ArgumentNullException.ThrowIfNull(before);
+        ArgumentNullException.ThrowIfNull(after);
+        if (chunkSizeMeters <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(chunkSizeMeters));
+        }
+
+        var chunks = new HashSet<World.WorldChunkId>();
+        foreach (var node in RemovedNodes)
+        {
+            chunks.Add(World.WorldChunkId.FromPoint(
+                node.Position,
+                chunkSizeMeters));
+        }
+
+        foreach (var node in AddedNodes)
+        {
+            chunks.Add(World.WorldChunkId.FromPoint(
+                node.Position,
+                chunkSizeMeters));
+        }
+
+        foreach (var port in RemovedPorts)
+        {
+            AddNodeChunk(before, port.NodeId, chunkSizeMeters, chunks);
+        }
+
+        foreach (var port in AddedPorts)
+        {
+            AddNodeChunk(after, port.NodeId, chunkSizeMeters, chunks);
+        }
+
+        foreach (var connection in RemovedConnections)
+        {
+            AddNodeChunk(
+                before,
+                connection.NodeId,
+                chunkSizeMeters,
+                chunks);
+        }
+
+        foreach (var connection in AddedConnections)
+        {
+            AddNodeChunk(
+                after,
+                connection.NodeId,
+                chunkSizeMeters,
+                chunks);
+        }
+
+        foreach (var alignment in RemovedAlignments)
+        {
+            AddGeometry(
+                alignment.ControlPoints,
+                chunkSizeMeters,
+                0,
+                chunks);
+        }
+
+        foreach (var alignment in AddedAlignments)
+        {
+            AddGeometry(
+                alignment.ControlPoints,
+                chunkSizeMeters,
+                0,
+                chunks);
+        }
+
+        foreach (var track in RemovedTracks)
+        {
+            AddTrackGeometry(
+                before,
+                track,
+                chunkSizeMeters,
+                chunks);
+        }
+
+        foreach (var track in AddedTracks)
+        {
+            AddTrackGeometry(
+                after,
+                track,
+                chunkSizeMeters,
+                chunks);
+        }
+
+        var addedGroupsById = AddedTrackGroups.ToDictionary(
+            group => group.Id);
+        var removedGroupsById = RemovedTrackGroups.ToDictionary(
+            group => group.Id);
+        foreach (var group in RemovedTrackGroups)
+        {
+            var removedMembership = addedGroupsById.TryGetValue(
+                group.Id,
+                out var replacement)
+                ? group.TrackIds.Except(replacement.TrackIds)
+                : group.TrackIds;
+            foreach (var id in removedMembership)
+            {
+                if (before.Tracks.TryGetValue(id, out var track))
+                {
+                    AddTrackGeometry(
+                        before,
+                        track,
+                        chunkSizeMeters,
+                        chunks);
+                }
+            }
+        }
+
+        foreach (var group in AddedTrackGroups)
+        {
+            var addedMembership = removedGroupsById.TryGetValue(
+                group.Id,
+                out var previous)
+                ? group.TrackIds.Except(previous.TrackIds)
+                : group.TrackIds;
+            foreach (var id in addedMembership)
+            {
+                if (after.Tracks.TryGetValue(id, out var track))
+                {
+                    AddTrackGeometry(
+                        after,
+                        track,
+                        chunkSizeMeters,
+                        chunks);
+                }
+            }
+        }
+
+        return chunks
+            .OrderBy(chunk => chunk.X)
+            .ThenBy(chunk => chunk.Y)
+            .ToImmutableArray();
+    }
+
+    private static void AddNodeChunk(
+        RailTopology topology,
+        World.StableId nodeId,
+        int chunkSizeMeters,
+        ISet<World.WorldChunkId> chunks)
+    {
+        if (topology.Nodes.TryGetValue(nodeId, out var node))
+        {
+            chunks.Add(World.WorldChunkId.FromPoint(
+                node.Position,
+                chunkSizeMeters));
+        }
+    }
+
+    private static void AddTrackGeometry(
+        RailTopology topology,
+        TrackEdge track,
+        int chunkSizeMeters,
+        ISet<World.WorldChunkId> chunks)
+    {
+        if (topology.Alignments.TryGetValue(
+                track.AlignmentId,
+                out var alignment))
+        {
+            AddGeometry(
+                alignment.ControlPoints,
+                chunkSizeMeters,
+                Math.Abs((long)track.LateralOffsetMillimeters),
+                chunks);
+        }
+    }
+
+    private static void AddGeometry(
+        ImmutableArray<World.WorldPoint> points,
+        int chunkSizeMeters,
+        long paddingMillimeters,
+        ISet<World.WorldChunkId> chunks)
+    {
+        chunks.UnionWith(
+            World.WorldChunkCoverage.TracePolyline(
+                points,
+                chunkSizeMeters,
+                paddingMillimeters));
     }
 
     private static RailEditIntent CombineIntent(

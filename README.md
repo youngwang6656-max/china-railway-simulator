@@ -10,6 +10,7 @@ Godot 2D 宏观地图编辑器，以及与界面解耦的纯 C# 确定性领域�
 - 地图平移、缩放与区域/线路/编辑三级 LOD。
 - 一笔绘制上下行两股独立物理轨道，控制点自动平滑并可拖动。
 - 将联络线吸附到既有节点，并循环选择明确的双向互通方案。
+- 既有双线可载入草案并原子改线，端点锁定且稳定 ID 保持不变。
 - 框选、删除控制点、原子删除线路、轨道拆分和互通断开；所有操作均可撤销。
 - 示例 A—C—D—B 双线、线路二、D 附近双向联络线。
 - 普通几何交叉默认不互通；只有显式连接才改变行车拓扑。
@@ -50,7 +51,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1
 也可以在 Godot 4.6.3 .NET 中打开 `game/project.godot` 后按 F6/F5。
 
 进入地图后会自动创建完整示例。工具栏可新建世界、绘制双线或联络线、
-切换明确互通方案、追加示例线路、撤销/重做及保存/读取。
+原子改线、切换明确互通方案、追加示例线路、撤销/重做及保存/读取。
 
 操作方式：
 
@@ -59,6 +60,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1
 - “绘制双线”模式下左键：添加控制点；拖动已有橙色点可调整。
 - “绘制联络线”模式：两端吸附既有节点；“切换互通方案”选择要开放的
   四个明确行车方向。
+- “既有线改线”模式：先点击双线区段载入草案；端点锁定，拖动已有控制点
+  或点击线路附近插入新控制点，Enter/双击后以单个可撤销事务替换几何。
 - “框选”拖出矩形后可“删除所选”或“断开互通”；“拆分轨道”点击
   既有双线可创建新的可接入节点。
 - Delete/Backspace：绘线时删除当前控制点，其他模式删除所选铁路对象。
@@ -74,7 +77,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1
 ```
 
-脚本离线友好地执行格式、Release/Debug 构建、126 项以上测试、75% 覆盖率门，
+脚本离线友好地执行格式、Release/Debug 构建、128 项以上测试、75% 覆盖率门，
 并真正实例化地图 UI 完成三帧 Godot 无界面冒烟。成功结尾应包含：
 
 ```text

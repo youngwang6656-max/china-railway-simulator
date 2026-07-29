@@ -250,9 +250,14 @@ public partial class Bootstrap : Control
         var controlPointDeleteOk = editor.DraftWaypoints.Length == 2;
         editor.CancelDraft();
 
-        var splitTarget = editor.World.RailTopology.Tracks.Values
-            .OrderBy(track => track.Id)
-            .First();
+        var demoMainGroup = editor.World.RailTopology.TrackGroups.Values
+            .Single(
+                group =>
+                    group.Id.Value.Contains(
+                        "-demo-main:",
+                        StringComparison.Ordinal));
+        var splitTarget = editor.World.RailTopology.Tracks[
+            demoMainGroup.TrackIds[0]];
         var splitAlignment = editor.World.RailTopology.Alignments[
             splitTarget.AlignmentId];
         var splitPoint = splitAlignment.ControlPoints[
@@ -270,6 +275,49 @@ public partial class Bootstrap : Control
             editor.World.RailTopology.Tracks.Count < tracksBeforeDelete &&
             editor.Undo() == CommandStatus.Accepted &&
             editor.World.RailTopology.Tracks.Count == tracksBeforeDelete;
+        var demoReferenceSyncOk =
+            editor.BuildDemoMainLine() == CommandStatus.Rejected;
+
+        demoMainGroup = editor.World.RailTopology.TrackGroups[
+            demoMainGroup.Id];
+        var realignTarget = editor.World.RailTopology.Tracks[
+            demoMainGroup.TrackIds[0]];
+        var realignAlignment = editor.World.RailTopology.Alignments[
+            realignTarget.AlignmentId];
+        var originalGeometry = realignAlignment.ControlPoints;
+        var stableTrackIds = editor.World.RailTopology.Tracks.Keys
+            .ToHashSet();
+        var realignPoint = originalGeometry[
+            originalGeometry.Length / 2];
+        editor.SetTool(WorldEditorTool.RealignTrack);
+        var realignLoaded =
+            editor.BeginRealignAt(realignPoint, radiusMeters: 1) ==
+            CommandStatus.Accepted;
+        editor.AddWaypoint(
+            realignPoint.OffsetMillimeters(0, 2_000_000),
+            snapRadiusMeters: 1);
+        var realignResult = editor.CommitDraft();
+        if (realignResult == CommandStatus.Rejected)
+        {
+            realignResult = editor.CommitDraft();
+        }
+
+        var realignCommitted =
+            realignResult == CommandStatus.Accepted &&
+            stableTrackIds.SetEquals(
+                editor.World.RailTopology.Tracks.Keys) &&
+            !originalGeometry.SequenceEqual(
+                editor.World.RailTopology.Alignments[
+                    realignAlignment.Id].ControlPoints);
+        var realignUndo =
+            editor.Undo() == CommandStatus.Accepted &&
+            originalGeometry.SequenceEqual(
+                editor.World.RailTopology.Alignments[
+                    realignAlignment.Id].ControlPoints);
+        var realignOk =
+            realignLoaded &&
+            realignCommitted &&
+            realignUndo;
 
         var connectedNode = editor.World.RailTopology.Nodes.Values
             .First(
@@ -294,6 +342,8 @@ public partial class Bootstrap : Control
             controlPointDeleteOk &&
             splitOk &&
             deleteOk &&
+            demoReferenceSyncOk &&
+            realignOk &&
             boxSelectOk &&
             disconnectOk);
     }
@@ -336,6 +386,10 @@ public partial class Bootstrap : Control
             () => _editor.SetTool(WorldEditorTool.DrawConnector));
         AddButton(
             toolbar,
+            "既有线改线",
+            () => _editor.SetTool(WorldEditorTool.RealignTrack));
+        AddButton(
+            toolbar,
             "框选",
             () => _editor.SetTool(WorldEditorTool.BoxSelect));
         AddButton(
@@ -372,7 +426,7 @@ public partial class Bootstrap : Control
 
         var hint = new Label
         {
-            Text = "滚轮缩放｜中/右键平移｜Delete 删除点/所选｜拆分后可接联络线",
+            Text = "滚轮缩放｜中/右键平移｜改线端点锁定｜拆分后可接联络线",
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             VerticalAlignment = VerticalAlignment.Center
         };

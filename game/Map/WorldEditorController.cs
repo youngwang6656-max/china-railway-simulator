@@ -17,6 +17,7 @@ public enum WorldEditorTool
     BoxSelect,
     DrawDoubleTrack,
     DrawConnector,
+    RealignTrack,
     SplitTrack
 }
 
@@ -35,6 +36,7 @@ public sealed class WorldEditorController : ISnapshotContributor
     private StableId? _connectorGroupId;
     private StableId? _mainJunctionStationId;
     private StableId? _secondLineJunctionStationId;
+    private StableId? _realignTrackId;
     private string? _pendingWarningFingerprint;
     private int _connectorMovementPlan;
     private ImmutableHashSet<StableId> _selectedObjectIds =
@@ -105,13 +107,6 @@ public sealed class WorldEditorController : ISnapshotContributor
 
     public static WorldEditorController CreateDefault(
         ulong seed,
-        string savePath)
-    {
-        return CreateDefault(seed, savePath, new SimulationCommandBus());
-    }
-
-    public static WorldEditorController CreateDefault(
-        ulong seed,
         string savePath,
         SimulationCommandBus commandBus)
     {
@@ -157,6 +152,7 @@ public sealed class WorldEditorController : ISnapshotContributor
         _connectorGroupId = null;
         _mainJunctionStationId = null;
         _secondLineJunctionStationId = null;
+        _realignTrackId = null;
         CurrentTool = WorldEditorTool.Inspect;
         SelectedObjectId = null;
         _selectedObjectIds = ImmutableHashSet<StableId>.Empty;
@@ -169,6 +165,7 @@ public sealed class WorldEditorController : ISnapshotContributor
         if (tool != CurrentTool)
         {
             _draftWaypoints.Clear();
+            _realignTrackId = null;
             _pendingWarningFingerprint = null;
             _connectorMovementPlan = 0;
         }
@@ -180,6 +177,8 @@ public sealed class WorldEditorController : ISnapshotContributor
                 "双线工具：左键布点，Enter 或双击提交，Esc 取消",
             WorldEditorTool.DrawConnector =>
                 "联络线工具：依次选择两个既有节点，Enter 或双击提交",
+            WorldEditorTool.RealignTrack =>
+                "改线工具：点击既有双线，拖动或增加控制点后提交",
             WorldEditorTool.BoxSelect =>
                 "框选工具：按住左键拖出选择框",
             WorldEditorTool.SplitTrack =>
@@ -266,12 +265,25 @@ public sealed class WorldEditorController : ISnapshotContributor
         Changed?.Invoke();
     }
 
-    public void AddWaypoint(
+    public int AddWaypoint(
         WorldPoint point,
         double snapRadiusMeters)
     {
         var waypoint = SnapWaypoint(point, snapRadiusMeters);
-        _draftWaypoints.Add(waypoint);
+        var index = _draftWaypoints.Count;
+        if (CurrentTool == WorldEditorTool.RealignTrack &&
+            _realignTrackId.HasValue &&
+            _draftWaypoints.Count >= 2)
+        {
+            index = FindNearestDraftSegment(point) + 1;
+            waypoint = new DraftWaypoint(waypoint.Position, null);
+            _draftWaypoints.Insert(index, waypoint);
+        }
+        else
+        {
+            _draftWaypoints.Add(waypoint);
+        }
+
         _pendingWarningFingerprint = null;
         _connectorMovementPlan = 0;
         LastMessage = waypoint.NodeId.HasValue
@@ -280,6 +292,7 @@ public sealed class WorldEditorController : ISnapshotContributor
                 ? $"已吸附到车站 {waypoint.StationId.Value}"
                 : $"已添加控制点 {_draftWaypoints.Count}";
         Changed?.Invoke();
+        return index;
     }
 
     public void MoveWaypoint(
@@ -290,6 +303,15 @@ public sealed class WorldEditorController : ISnapshotContributor
         if (index < 0 || index >= _draftWaypoints.Count)
         {
             throw new ArgumentOutOfRangeException(nameof(index));
+        }
+
+        if (CurrentTool == WorldEditorTool.RealignTrack &&
+            _realignTrackId.HasValue &&
+            (index == 0 || index == _draftWaypoints.Count - 1))
+        {
+            LastMessage = "改线必须保留两端既有拓扑边界";
+            Changed?.Invoke();
+            return;
         }
 
         _draftWaypoints[index] = SnapWaypoint(point, snapRadiusMeters);
@@ -304,6 +326,15 @@ public sealed class WorldEditorController : ISnapshotContributor
         if (index < 0 || index >= _draftWaypoints.Count)
         {
             throw new ArgumentOutOfRangeException(nameof(index));
+        }
+
+        if (CurrentTool == WorldEditorTool.RealignTrack &&
+            _realignTrackId.HasValue &&
+            (index == 0 || index == _draftWaypoints.Count - 1))
+        {
+            LastMessage = "不能删除改线草案的端点";
+            Changed?.Invoke();
+            return;
         }
 
         _draftWaypoints.RemoveAt(index);
@@ -440,20 +471,7 @@ public sealed class WorldEditorController : ISnapshotContributor
         WorldPoint point,
         double radiusMeters)
     {
-        var nearest = World.RailTopology.Tracks.Values
-            .Select(
-                track => new
-                {
-                    Track = track,
-                    Distance = DistanceToPolylineMeters(
-                        point,
-                        World.RailTopology.Alignments[
-                            track.AlignmentId].ControlPoints)
-                })
-            .Where(item => item.Distance <= radiusMeters)
-            .OrderBy(item => item.Distance)
-            .ThenBy(item => item.Track.Id)
-            .FirstOrDefault();
+        var nearest = FindNearestTrack(point, radiusMeters);
         if (nearest is null)
         {
             LastMessage = "点击位置附近没有可拆分的双线轨道";
@@ -468,7 +486,7 @@ public sealed class WorldEditorController : ISnapshotContributor
                     NewIdSource("split"))
                 .CreateSplitPatch(
                     World.RailTopology,
-                    nearest.Track.Id,
+                    nearest.Id,
                     point,
                     World.BaseWorld.Parameters.ChunkSizeMeters);
         }
@@ -497,9 +515,58 @@ public sealed class WorldEditorController : ISnapshotContributor
         return result.Status;
     }
 
+    public CommandStatus BeginRealignAt(
+        WorldPoint point,
+        double radiusMeters)
+    {
+        var nearest = FindNearestTrack(point, radiusMeters);
+        if (nearest is null)
+        {
+            LastMessage = "点击位置附近没有可改线的双线轨道";
+            Changed?.Invoke();
+            return CommandStatus.Rejected;
+        }
+
+        var alignment = World.RailTopology.Alignments[
+            nearest.AlignmentId];
+        if (World.RailTopology.Tracks.Values.Count(
+                track => track.AlignmentId == alignment.Id) != 2)
+        {
+            LastMessage = "当前仅支持对完整双线区段执行原子改线";
+            Changed?.Invoke();
+            return CommandStatus.Rejected;
+        }
+
+        _realignTrackId = nearest.Id;
+        _draftWaypoints.Clear();
+        for (var index = 0;
+             index < alignment.ControlPoints.Length;
+             index += 8)
+        {
+            _draftWaypoints.Add(new DraftWaypoint(
+                alignment.ControlPoints[index],
+                null));
+        }
+
+        if (_draftWaypoints[^1].Position !=
+            alignment.ControlPoints[^1])
+        {
+            _draftWaypoints.Add(new DraftWaypoint(
+                alignment.ControlPoints[^1],
+                null));
+        }
+
+        _pendingWarningFingerprint = null;
+        LastMessage =
+            $"已载入区段 {alignment.Id}；端点锁定，可拖动或增加控制点";
+        Changed?.Invoke();
+        return CommandStatus.Accepted;
+    }
+
     public void CancelDraft()
     {
         _draftWaypoints.Clear();
+        _realignTrackId = null;
         _pendingWarningFingerprint = null;
         _connectorMovementPlan = 0;
         LastMessage = "已取消线路草案";
@@ -518,6 +585,11 @@ public sealed class WorldEditorController : ISnapshotContributor
         if (CurrentTool == WorldEditorTool.DrawConnector)
         {
             return CommitConnectorDraft(draft);
+        }
+
+        if (CurrentTool == WorldEditorTool.RealignTrack)
+        {
+            return CommitRealignDraft(draft);
         }
 
         return CommitDoubleTrackDraft(draft);
@@ -563,6 +635,75 @@ public sealed class WorldEditorController : ISnapshotContributor
         {
             _draftWaypoints.Clear();
             _pendingWarningFingerprint = null;
+        }
+
+        return result.Status;
+    }
+
+    private CommandStatus CommitRealignDraft(AlignmentDraft draft)
+    {
+        if (!_realignTrackId.HasValue)
+        {
+            LastMessage = "请先点击一段既有双线载入改线草案";
+            Changed?.Invoke();
+            return CommandStatus.Rejected;
+        }
+
+        RailGraphPatch patch;
+        try
+        {
+            patch = new RailTopologyEditStrategy(
+                    NewIdSource("realign"))
+                .CreateRealignPatch(
+                    World.RailTopology,
+                    _realignTrackId.Value,
+                    draft,
+                    World.BaseWorld.Parameters.ChunkSizeMeters);
+        }
+        catch (Exception exception)
+            when (exception is ArgumentException or
+                  InvalidOperationException)
+        {
+            LastMessage = exception.Message;
+            Changed?.Invoke();
+            return CommandStatus.Rejected;
+        }
+
+        var validation = new RailEditValidator().Validate(World, patch);
+        var warningCodes = validation.Issues
+            .Where(
+                issue =>
+                    issue.Severity == RailValidationSeverity.Warning)
+            .Select(issue => issue.Code)
+            .ToImmutableHashSet(StringComparer.Ordinal);
+        var fingerprint = DraftFingerprint();
+        if (!warningCodes.IsEmpty &&
+            !string.Equals(
+                _pendingWarningFingerprint,
+                fingerprint,
+                StringComparison.Ordinal))
+        {
+            _pendingWarningFingerprint = fingerprint;
+            LastMessage =
+                $"改线警告：{string.Join("、", warningCodes.Order())}；" +
+                "再次 Enter 或双击确认";
+            Changed?.Invoke();
+            return CommandStatus.Rejected;
+        }
+
+        patch = patch with
+        {
+            AcknowledgedWarningCodes = warningCodes
+        };
+        var result = Submit(
+            new ApplyRailEditCommand(patch, World.Revision));
+        if (result.Status == CommandStatus.Accepted)
+        {
+            _draftWaypoints.Clear();
+            _realignTrackId = null;
+            _pendingWarningFingerprint = null;
+            LastMessage = "既有双线已原子改线，稳定标识保持不变";
+            Changed?.Invoke();
         }
 
         return result.Status;
@@ -816,12 +957,26 @@ public sealed class WorldEditorController : ISnapshotContributor
 
     public CommandStatus Undo()
     {
-        return Submit(new UndoWorldEditCommand(World.Revision)).Status;
+        var result = Submit(
+            new UndoWorldEditCommand(World.Revision));
+        if (result.Status == CommandStatus.Accepted)
+        {
+            SynchronizeDemoReferencesFromTopology();
+        }
+
+        return result.Status;
     }
 
     public CommandStatus Redo()
     {
-        return Submit(new RedoWorldEditCommand(World.Revision)).Status;
+        var result = Submit(
+            new RedoWorldEditCommand(World.Revision));
+        if (result.Status == CommandStatus.Accepted)
+        {
+            SynchronizeDemoReferencesFromTopology();
+        }
+
+        return result.Status;
     }
 
     public void Save()
@@ -841,6 +996,7 @@ public sealed class WorldEditorController : ISnapshotContributor
         _connectorGroupId = null;
         _mainJunctionStationId = null;
         _secondLineJunctionStationId = null;
+        _realignTrackId = null;
         SynchronizeDemoReferencesFromTopology();
         CurrentTool = WorldEditorTool.Inspect;
         SelectedObjectId = null;
@@ -1176,6 +1332,46 @@ public sealed class WorldEditorController : ISnapshotContributor
             .OrderBy(group => group.Id)
             .Select(group => group.Id)
             .FirstOrDefault(trackId);
+    }
+
+    private TrackEdge? FindNearestTrack(
+        WorldPoint point,
+        double radiusMeters)
+    {
+        return World.RailTopology.Tracks.Values
+            .Select(
+                track => new
+                {
+                    Track = track,
+                    Distance = DistanceToPolylineMeters(
+                        point,
+                        World.RailTopology.Alignments[
+                            track.AlignmentId].ControlPoints)
+                })
+            .Where(item => item.Distance <= radiusMeters)
+            .OrderBy(item => item.Distance)
+            .ThenBy(item => item.Track.Id)
+            .Select(item => item.Track)
+            .FirstOrDefault();
+    }
+
+    private int FindNearestDraftSegment(WorldPoint point)
+    {
+        return Enumerable.Range(0, _draftWaypoints.Count - 1)
+            .Select(
+                index => new
+                {
+                    Index = index,
+                    Distance = DistanceToPolylineMeters(
+                        point,
+                        ImmutableArray.Create(
+                            _draftWaypoints[index].Position,
+                            _draftWaypoints[index + 1].Position))
+                })
+            .OrderBy(item => item.Distance)
+            .ThenBy(item => item.Index)
+            .First()
+            .Index;
     }
 
     private static double DistanceToPolylineMeters(

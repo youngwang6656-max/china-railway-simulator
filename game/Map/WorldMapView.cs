@@ -187,6 +187,17 @@ public partial class WorldMapView : Control
             return;
         }
 
+        if (_controller.CurrentTool == WorldEditorTool.RealignTrack &&
+            _controller.DraftWaypoints.IsEmpty)
+        {
+            _controller.BeginRealignAt(
+                ScreenToWorld(mouse.Position),
+                _metersPerPixel * 15);
+            _selectedWaypoint = -1;
+            AcceptEvent();
+            return;
+        }
+
         if (_controller.CurrentTool == WorldEditorTool.Inspect)
         {
             _controller.InspectAt(
@@ -207,11 +218,9 @@ public partial class WorldMapView : Control
         _selectedWaypoint = _draggedWaypoint;
         if (_draggedWaypoint < 0)
         {
-            _controller.AddWaypoint(
+            _selectedWaypoint = _controller.AddWaypoint(
                 ScreenToWorld(mouse.Position),
                 _metersPerPixel * 15);
-            _selectedWaypoint =
-                _controller.DraftWaypoints.Length - 1;
         }
 
         AcceptEvent();
@@ -266,7 +275,8 @@ public partial class WorldMapView : Control
         {
             if ((_controller.CurrentTool is
                      WorldEditorTool.DrawDoubleTrack or
-                     WorldEditorTool.DrawConnector) &&
+                     WorldEditorTool.DrawConnector or
+                     WorldEditorTool.RealignTrack) &&
                 _controller.DraftWaypoints.Length > 0)
             {
                 var index = _selectedWaypoint >= 0
