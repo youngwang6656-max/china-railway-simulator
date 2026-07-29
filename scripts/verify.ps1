@@ -190,6 +190,9 @@ try {
     if ($smokeOutput -notmatch 'RAILSIM_PERSISTENCE_SMOKE roundtrip=True') {
         throw "Godot persistence smoke marker missing.`n$smokeOutput"
     }
+    if ($smokeOutput -notmatch 'RAILSIM_HOST_COMMAND_SMOKE dispatched=True') {
+        throw "Godot host command smoke marker missing.`n$smokeOutput"
+    }
 
     Write-Host "TOOLCHAIN_OK dotnet=$dotnetVersion godot=$godotVersion"
     Write-Host "TESTS_OK total=$totalTests passed=$passedTests failed=$failedTests"
@@ -202,6 +205,7 @@ try {
     Write-Host 'GODOT_HISTORY_SMOKE_OK rebuild=True'
     Write-Host 'GODOT_SNAPSHOT_SMOKE_OK published=True'
     Write-Host 'GODOT_PERSISTENCE_SMOKE_OK roundtrip=True'
+    Write-Host 'GODOT_HOST_COMMAND_SMOKE_OK dispatched=True'
     Write-Host 'VERIFY_OK'
 } finally {
     Pop-Location

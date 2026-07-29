@@ -74,6 +74,7 @@ GODOT_WORLD_SMOKE_OK cities=64 stations=64 tracks=12
 GODOT_HISTORY_SMOKE_OK rebuild=True
 GODOT_SNAPSHOT_SMOKE_OK published=True
 GODOT_PERSISTENCE_SMOKE_OK roundtrip=True
+GODOT_HOST_COMMAND_SMOKE_OK dispatched=True
 VERIFY_OK
 ```
 

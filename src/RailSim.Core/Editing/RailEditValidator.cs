@@ -80,8 +80,18 @@ public sealed class RailEditValidator : IRailEditValidator
             return new RailValidationResult(issues.ToImmutable());
         }
 
-        if (patch.Intent is RailEditIntent.DoubleTrackCorridor or
-            RailEditIntent.Connector &&
+        if (patch.Intent == RailEditIntent.DoubleTrackCorridor &&
+            patch.AddedTracks.IsEmpty)
+        {
+            issues.Add(new RailValidationIssue(
+                "rail.double_track.incomplete",
+                RailValidationSeverity.Error,
+                null,
+                null));
+        }
+        else if (
+            (patch.Intent is RailEditIntent.DoubleTrackCorridor or
+                RailEditIntent.Connector) &&
             patch.AddedTracks.Length > 0)
         {
             ValidateDoubleTrackCompleteness(
@@ -138,6 +148,21 @@ public sealed class RailEditValidator : IRailEditValidator
                     alignmentGroup.Key,
                     null));
             }
+        }
+
+        var groupedTrackIds = patch.AddedTrackGroups
+            .SelectMany(group => group.TrackIds)
+            .ToArray();
+        if (groupedTrackIds.Length != patch.AddedTracks.Length ||
+            groupedTrackIds.Distinct().Count() != groupedTrackIds.Length ||
+            patch.AddedTracks.Any(
+                track => !groupedTrackIds.Contains(track.Id)))
+        {
+            issues.Add(new RailValidationIssue(
+                "rail.double_track.group_incomplete",
+                RailValidationSeverity.Error,
+                null,
+                null));
         }
     }
 
@@ -299,14 +324,42 @@ public sealed class RailEditValidator : IRailEditValidator
                  (double)(second.XMillimeters - origin.XMillimeters));
         }
 
+        static bool OnSegment(
+            WorldPoint first,
+            WorldPoint second,
+            WorldPoint point)
+        {
+            return
+                point.XMillimeters >= Math.Min(
+                    first.XMillimeters,
+                    second.XMillimeters) &&
+                point.XMillimeters <= Math.Max(
+                    first.XMillimeters,
+                    second.XMillimeters) &&
+                point.YMillimeters >= Math.Min(
+                    first.YMillimeters,
+                    second.YMillimeters) &&
+                point.YMillimeters <= Math.Max(
+                    first.YMillimeters,
+                    second.YMillimeters);
+        }
+
         var first = Cross(a, b, c);
         var second = Cross(a, b, d);
         var third = Cross(c, d, a);
         var fourth = Cross(c, d, b);
+        if (((first < 0 && second > 0) ||
+             (first > 0 && second < 0)) &&
+            ((third < 0 && fourth > 0) ||
+             (third > 0 && fourth < 0)))
+        {
+            return true;
+        }
+
         return
-            ((first <= 0 && second >= 0) ||
-             (first >= 0 && second <= 0)) &&
-            ((third <= 0 && fourth >= 0) ||
-             (third >= 0 && fourth <= 0));
+            (first == 0 && OnSegment(a, b, c)) ||
+            (second == 0 && OnSegment(a, b, d)) ||
+            (third == 0 && OnSegment(c, d, a)) ||
+            (fourth == 0 && OnSegment(c, d, b));
     }
 }

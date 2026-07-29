@@ -73,14 +73,38 @@ public sealed class WorldRegionIndex
             new Dictionary<WorldChunkId, MutableChunkContents>();
         foreach (var river in rivers)
         {
-            foreach (var point in river.Points)
+            for (var index = 1; index < river.Points.Length; index++)
             {
-                GetOrCreate(
-                    builders,
-                    WorldChunkId.FromPoint(
-                        point,
-                        parameters.ChunkSizeMeters))
-                    .RiverIds.Add(river.Id);
+                var start = river.Points[index - 1];
+                var end = river.Points[index];
+                var chunkSizeMillimeters = checked(
+                    parameters.ChunkSizeMeters * 1000L);
+                var maximumDelta = Math.Max(
+                    Math.Abs(end.XMillimeters - start.XMillimeters),
+                    Math.Abs(end.YMillimeters - start.YMillimeters));
+                var steps = Math.Max(
+                    1L,
+                    (maximumDelta + (chunkSizeMillimeters / 2) - 1) /
+                    (chunkSizeMillimeters / 2));
+                for (var step = 0L; step <= steps; step++)
+                {
+                    var ratio = step / (double)steps;
+                    var point = new WorldPoint(
+                        checked((long)Math.Round(
+                            start.XMillimeters +
+                            ((end.XMillimeters - start.XMillimeters) *
+                             ratio))),
+                        checked((long)Math.Round(
+                            start.YMillimeters +
+                            ((end.YMillimeters - start.YMillimeters) *
+                             ratio))));
+                    GetOrCreate(
+                        builders,
+                        WorldChunkId.FromPoint(
+                            point,
+                            parameters.ChunkSizeMeters))
+                        .RiverIds.Add(river.Id);
+                }
             }
         }
 

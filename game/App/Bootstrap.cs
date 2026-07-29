@@ -18,6 +18,8 @@ public partial class Bootstrap : Control
     private bool _smokePending;
     private bool _smokeHistoryOk;
     private bool _smokePersistenceOk;
+    private bool _smokeHostCommandOk;
+    private long _smokeStartTick;
     private int _smokeFrames;
     private SimulationRate _rate =
         SimulationRate.FromPreset(SimulationSpeedPreset.Normal);
@@ -62,6 +64,14 @@ public partial class Bootstrap : Control
                 mainLineRebuild == CommandStatus.Accepted &&
                 secondLineRebuild == CommandStatus.Accepted &&
                 connectorRebuild == CommandStatus.Accepted;
+            _editor.AttachHost(_host);
+            var hostUndo = _editor.Undo();
+            var hostRedo = _editor.Redo();
+            _smokeHostCommandOk =
+                hostUndo == CommandStatus.Accepted &&
+                hostRedo == CommandStatus.Accepted &&
+                _query.GetLatest().LastCommandSequence > 0;
+            _smokeStartTick = _host.CurrentTick.Value;
             var expectedHash = WorldContentHasher.HashState(_editor.World);
             _editor.Save();
             _editor.NewWorld(_editor.Seed + 1);
@@ -80,6 +90,7 @@ public partial class Bootstrap : Control
         _editor.BuildDemoMainLine();
         _editor.BuildDemoSecondLine();
         _editor.BuildDemoConnector();
+        _editor.AttachHost(_host);
         BuildWorkspace();
         UpdateStatus();
     }
@@ -106,7 +117,7 @@ public partial class Bootstrap : Control
     private void CompleteSmokeTest()
     {
         _smokePending = false;
-        var tick = _host.CurrentTick.Value;
+        var tick = _host.CurrentTick.Value - _smokeStartTick;
         GD.Print($"RAILSIM_SMOKE tick={tick}");
         var world = _editor.World;
         var snapshot = _query.GetLatest();
@@ -123,6 +134,7 @@ public partial class Bootstrap : Control
             world.RailTopology.Tracks.Count >= 8 &&
             _smokeHistoryOk &&
             _smokePersistenceOk &&
+            _smokeHostCommandOk &&
             snapshotOk;
         GD.Print(
             $"RAILSIM_WORLD_SMOKE cities={world.BaseWorld.Cities.Count} " +
@@ -131,6 +143,7 @@ public partial class Bootstrap : Control
         GD.Print($"RAILSIM_HISTORY_SMOKE rebuild={_smokeHistoryOk}");
         GD.Print($"RAILSIM_SNAPSHOT_SMOKE published={snapshotOk}");
         GD.Print($"RAILSIM_PERSISTENCE_SMOKE roundtrip={_smokePersistenceOk}");
+        GD.Print($"RAILSIM_HOST_COMMAND_SMOKE dispatched={_smokeHostCommandOk}");
         GetTree().Quit(success ? 0 : 1);
     }
 
@@ -268,7 +281,7 @@ public partial class Bootstrap : Control
         var button = new Button
         {
             Text = text,
-            CustomMinimumSize = new Vector2(78, 40)
+            CustomMinimumSize = new Vector2(68, 40)
         };
         button.Pressed += action;
         parent.AddChild(button);

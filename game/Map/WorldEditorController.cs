@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using RailSim.Core.Commands;
 using RailSim.Core.Editing;
+using RailSim.Core.Hosting;
 using RailSim.Core.Persistence;
 using RailSim.Core.Projection;
 using RailSim.Core.Query;
@@ -27,6 +28,7 @@ public sealed class WorldEditorController : ISnapshotContributor
     private WorldEditorSession _session = null!;
     private readonly SimulationCommandBus _commandBus;
     private ISimulationQuery? _query;
+    private SimulationHost? _host;
     private long _commandTick;
     private StableId? _mainGroupId;
     private StableId? _secondLineGroupId;
@@ -121,6 +123,11 @@ public sealed class WorldEditorController : ISnapshotContributor
         _query = query ?? throw new ArgumentNullException(nameof(query));
     }
 
+    public void AttachHost(SimulationHost host)
+    {
+        _host = host ?? throw new ArgumentNullException(nameof(host));
+    }
+
     public ISimulationSnapshotSection Capture()
     {
         return new WorldSnapshotSection(World);
@@ -152,13 +159,14 @@ public sealed class WorldEditorController : ISnapshotContributor
 
     public void SetTool(WorldEditorTool tool)
     {
-        CurrentTool = tool;
-        if (tool == WorldEditorTool.Inspect)
+        if (tool != CurrentTool)
         {
             _draftWaypoints.Clear();
             _pendingWarningFingerprint = null;
+            _connectorMovementPlan = 0;
         }
 
+        CurrentTool = tool;
         LastMessage = tool == WorldEditorTool.DrawDoubleTrack
             ? "双线工具：左键布点，Enter 或双击提交，Esc 取消"
             : tool == WorldEditorTool.DrawConnector
@@ -636,10 +644,26 @@ public sealed class WorldEditorController : ISnapshotContributor
 
     private CommandResult Submit(ISimulationCommand command)
     {
-        var tick = new SimulationTick(checked(++_commandTick));
-        var envelope = _commandBus.Enqueue(command, tick);
-        var result = _commandBus.DispatchDue(tick).Single(
-            item => item.Sequence == envelope.Sequence);
+        CommandResult result;
+        if (_host is null)
+        {
+            var tick = new SimulationTick(checked(++_commandTick));
+            var envelope = _commandBus.Enqueue(command, tick);
+            result = _commandBus.DispatchDue(tick).Single(
+                item => item.Sequence == envelope.Sequence);
+        }
+        else
+        {
+            var envelope = _host.Submit(command);
+            result = _host
+                .AdvanceFrame(
+                    SimulationClock.StepDuration,
+                    SimulationRate.FromPreset(
+                        SimulationSpeedPreset.Normal))
+                .CommandResults
+                .Single(item => item.Sequence == envelope.Sequence);
+        }
+
         LastMessage = result.Status == CommandStatus.Accepted
             ? "操作成功"
             : $"{result.Code}: {result.Message}";
