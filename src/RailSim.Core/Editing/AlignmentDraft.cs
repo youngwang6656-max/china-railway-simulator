@@ -43,11 +43,45 @@ public interface IAlignmentSketchStrategy
     AlignmentDraft Build(ImmutableArray<DraftWaypoint> waypoints);
 }
 
-public sealed class ControlPointSplineStrategy : IAlignmentSketchStrategy
+public readonly record struct AlignmentEndpointHints(
+    double? StartHeadingRadians,
+    double? EndHeadingRadians)
 {
-    private const int SamplesPerSegment = 8;
+    public static AlignmentEndpointHints None { get; } = new(null, null);
+}
+
+public interface IGuidedAlignmentSketchStrategy :
+    IAlignmentSketchStrategy
+{
+    AlignmentDraft Build(
+        ImmutableArray<DraftWaypoint> waypoints,
+        AlignmentEndpointHints hints);
+}
+
+public sealed class ControlPointSplineStrategy :
+    IGuidedAlignmentSketchStrategy
+{
+    private readonly int _samplesPerSegment;
+
+    public ControlPointSplineStrategy(int samplesPerSegment = 8)
+    {
+        if (samplesPerSegment <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(samplesPerSegment));
+        }
+
+        _samplesPerSegment = samplesPerSegment;
+    }
 
     public AlignmentDraft Build(ImmutableArray<DraftWaypoint> waypoints)
+    {
+        return Build(waypoints, AlignmentEndpointHints.None);
+    }
+
+    public AlignmentDraft Build(
+        ImmutableArray<DraftWaypoint> waypoints,
+        AlignmentEndpointHints hints)
     {
         if (waypoints.Length < 2)
         {
@@ -67,23 +101,70 @@ public sealed class ControlPointSplineStrategy : IAlignmentSketchStrategy
         }
 
         var samples = ImmutableArray.CreateBuilder<WorldPoint>(
-            ((waypoints.Length - 1) * SamplesPerSegment) + 1);
+            ((waypoints.Length - 1) * _samplesPerSegment) + 1);
         samples.Add(waypoints[0].Position);
         for (var segment = 0; segment < waypoints.Length - 1; segment++)
         {
-            var p0 = waypoints[Math.Max(0, segment - 1)].Position;
             var p1 = waypoints[segment].Position;
             var p2 = waypoints[segment + 1].Position;
-            var p3 = waypoints[Math.Min(waypoints.Length - 1, segment + 2)]
-                .Position;
-            for (var sample = 1; sample <= SamplesPerSegment; sample++)
+            var p0 = segment == 0 &&
+                hints.StartHeadingRadians.HasValue
+                ? VirtualStart(
+                    p1,
+                    p2,
+                    hints.StartHeadingRadians.Value)
+                : waypoints[Math.Max(0, segment - 1)].Position;
+            var p3 = segment == waypoints.Length - 2 &&
+                hints.EndHeadingRadians.HasValue
+                ? VirtualEnd(
+                    p1,
+                    p2,
+                    hints.EndHeadingRadians.Value)
+                : waypoints[Math.Min(
+                    waypoints.Length - 1,
+                    segment + 2)].Position;
+            for (var sample = 1;
+                 sample <= _samplesPerSegment;
+                 sample++)
             {
-                var t = sample / (double)SamplesPerSegment;
+                var t = sample / (double)_samplesPerSegment;
                 samples.Add(CatmullRom(p0, p1, p2, p3, t));
             }
         }
 
         return new AlignmentDraft(waypoints, samples.MoveToImmutable());
+    }
+
+    private static WorldPoint VirtualStart(
+        WorldPoint start,
+        WorldPoint next,
+        double headingRadians)
+    {
+        var distanceMillimeters =
+            start.DistanceMetersTo(next) * 2000d;
+        return new WorldPoint(
+            checked((long)Math.Round(
+                next.XMillimeters -
+                (Math.Cos(headingRadians) * distanceMillimeters))),
+            checked((long)Math.Round(
+                next.YMillimeters -
+                (Math.Sin(headingRadians) * distanceMillimeters))));
+    }
+
+    private static WorldPoint VirtualEnd(
+        WorldPoint previous,
+        WorldPoint end,
+        double headingRadians)
+    {
+        var distanceMillimeters =
+            previous.DistanceMetersTo(end) * 2000d;
+        return new WorldPoint(
+            checked((long)Math.Round(
+                previous.XMillimeters +
+                (Math.Cos(headingRadians) * distanceMillimeters))),
+            checked((long)Math.Round(
+                previous.YMillimeters +
+                (Math.Sin(headingRadians) * distanceMillimeters))));
     }
 
     private static WorldPoint CatmullRom(
