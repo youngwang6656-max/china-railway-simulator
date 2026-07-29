@@ -1,5 +1,6 @@
 using Godot;
 using RailSim.Core.Projection;
+using RailSim.Core.Rail;
 using RailSim.Core.World;
 
 namespace RailSim.App.Map;
@@ -54,7 +55,7 @@ public partial class WorldMapView : Control
             return;
         }
 
-        var bounds = _controller.World.BaseWorld.Parameters.Bounds;
+        var bounds = _controller.DisplayWorld.BaseWorld.Parameters.Bounds;
         _centerXMillimeters =
             bounds.Minimum.XMillimeters + (bounds.WidthMillimeters / 2d);
         _centerYMillimeters =
@@ -81,7 +82,7 @@ public partial class WorldMapView : Control
         }
 
         EnsureTerrainTexture();
-        var world = _controller.World;
+        var world = _controller.DisplayWorld;
         var viewport = new MapViewport(
             VisibleWorldBounds(),
             _metersPerPixel);
@@ -91,6 +92,7 @@ public partial class WorldMapView : Control
         DrawTracks(frame);
         DrawCities(frame);
         DrawStations(frame);
+        DrawNodesAndPorts(frame);
         DrawConnections(frame);
         DrawDraft();
         DrawOverlay(frame);
@@ -153,8 +155,12 @@ public partial class WorldMapView : Control
         }
 
         GrabFocus();
-        if (_controller.CurrentTool != WorldEditorTool.DrawDoubleTrack)
+        if (_controller.CurrentTool == WorldEditorTool.Inspect)
         {
+            _controller.InspectAt(
+                ScreenToWorld(mouse.Position),
+                _metersPerPixel * 15);
+            AcceptEvent();
             return;
         }
 
@@ -231,7 +237,7 @@ public partial class WorldMapView : Control
 
     private void EnsureTerrainTexture()
     {
-        var terrain = _controller.World.BaseWorld.Terrain;
+        var terrain = _controller.DisplayWorld.BaseWorld.Terrain;
         if (_terrainHash == terrain.ContentHash && _terrainTexture is not null)
         {
             return;
@@ -293,28 +299,59 @@ public partial class WorldMapView : Control
     {
         foreach (var track in frame.Tracks)
         {
-            var pixelOffset = track.IsAggregate
-                ? 0f
-                : MathF.Sign(track.LateralOffsetMillimeters) *
-                  MathF.Max(
-                      2.2f,
-                      (float)(Math.Abs(track.LateralOffsetMillimeters) /
-                              1000d /
-                              _metersPerPixel));
-            var offset = new Vector2(0, pixelOffset);
             var points = track.Points
-                .Select(point => WorldToScreen(point) + offset)
+                .Select(WorldToScreen)
                 .ToArray();
+            var color = track.IsAggregate
+                ? new Color(0.96f, 0.68f, 0.25f)
+                : track.LateralOffsetMillimeters < 0
+                    ? new Color(0.18f, 0.82f, 0.98f)
+                    : new Color(0.36f, 0.92f, 0.57f);
             DrawPolyline(
                 points,
-                track.IsAggregate
-                    ? new Color(0.96f, 0.68f, 0.25f)
-                    : track.LateralOffsetMillimeters < 0
-                        ? new Color(0.18f, 0.82f, 0.98f)
-                        : new Color(0.36f, 0.92f, 0.57f),
+                color,
                 track.IsAggregate ? 4.5f : 3f,
                 true);
+            if (!track.IsAggregate)
+            {
+                DrawDirectionMarker(points, color);
+            }
         }
+    }
+
+    private void DrawDirectionMarker(
+        IReadOnlyList<Vector2> points,
+        Color color)
+    {
+        if (points.Count < 2)
+        {
+            return;
+        }
+
+        var segment = Math.Clamp(points.Count / 2, 1, points.Count - 1);
+        var start = points[segment - 1];
+        var end = points[segment];
+        var vector = end - start;
+        if (vector.LengthSquared() <= 0.001f)
+        {
+            return;
+        }
+
+        var direction = vector.Normalized();
+        var normal = new Vector2(-direction.Y, direction.X);
+        var tip = start.Lerp(end, 0.55f);
+        DrawLine(
+            tip,
+            tip - (direction * 8f) + (normal * 4f),
+            color,
+            2f,
+            true);
+        DrawLine(
+            tip,
+            tip - (direction * 8f) - (normal * 4f),
+            color,
+            2f,
+            true);
     }
 
     private void DrawCities(WorldMapFrame frame)
@@ -322,7 +359,9 @@ public partial class WorldMapView : Control
         foreach (var city in frame.Cities)
         {
             var position = WorldToScreen(city.Position);
-            var radius = city.Tier switch
+            var selected =
+                _controller.SelectedObjectId == city.SourceId;
+            var radius = selected ? 9f : city.Tier switch
             {
                 CityTier.Mega => 7f,
                 CityTier.Large => 5.5f,
@@ -333,7 +372,9 @@ public partial class WorldMapView : Control
             DrawCircle(
                 position,
                 radius,
-                new Color(0.98f, 0.75f, 0.31f),
+                selected
+                    ? new Color(1f, 0.34f, 0.12f)
+                    : new Color(0.98f, 0.75f, 0.31f),
                 true,
                 -1,
                 true);
@@ -361,10 +402,14 @@ public partial class WorldMapView : Control
         foreach (var station in frame.Stations)
         {
             var position = WorldToScreen(station.Position);
+            var selected =
+                _controller.SelectedObjectId == station.SourceId;
             DrawCircle(
                 position,
-                3.5f,
-                new Color(0.98f, 0.98f, 1f),
+                selected ? 6f : 3.5f,
+                selected
+                    ? new Color(1f, 0.42f, 0.16f)
+                    : new Color(0.98f, 0.98f, 1f),
                 true,
                 -1,
                 true);
@@ -392,6 +437,45 @@ public partial class WorldMapView : Control
                 new Color(0.96f, 0.28f, 0.6f, 0.32f),
                 false,
                 2f,
+                true);
+        }
+    }
+
+    private void DrawNodesAndPorts(WorldMapFrame frame)
+    {
+        foreach (var node in frame.Nodes)
+        {
+            var selected =
+                _controller.SelectedObjectId == node.SourceId;
+            DrawCircle(
+                WorldToScreen(node.Position),
+                selected
+                    ? 8f
+                    : node.Kind == RailNodeKind.Junction ? 6f : 4.5f,
+                selected
+                    ? new Color(1f, 0.3f, 0.14f, 1f)
+                    : new Color(1f, 0.82f, 0.25f, 0.92f),
+                false,
+                2f,
+                true);
+        }
+
+        foreach (var port in frame.Ports)
+        {
+            var color = port.Direction switch
+            {
+                RailPortDirection.Inbound =>
+                    new Color(0.95f, 0.3f, 0.42f, 0.8f),
+                RailPortDirection.Outbound =>
+                    new Color(0.25f, 0.86f, 1f, 0.8f),
+                _ => new Color(0.72f, 0.5f, 1f, 0.8f)
+            };
+            DrawCircle(
+                WorldToScreen(port.Position),
+                2.3f,
+                color,
+                true,
+                -1,
                 true);
         }
     }

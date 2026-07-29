@@ -7,11 +7,21 @@ namespace RailSim.Core.Projection;
 public sealed class WorldMapProjection : IWorldProjection
 {
     private readonly IMapLodPolicy _lodPolicy;
+    private readonly IWorldRegionProvider _regionProvider;
 
     public WorldMapProjection(IMapLodPolicy lodPolicy)
+        : this(lodPolicy, new GridWorldRegionProvider())
+    {
+    }
+
+    public WorldMapProjection(
+        IMapLodPolicy lodPolicy,
+        IWorldRegionProvider regionProvider)
     {
         _lodPolicy = lodPolicy ??
             throw new ArgumentNullException(nameof(lodPolicy));
+        _regionProvider = regionProvider ??
+            throw new ArgumentNullException(nameof(regionProvider));
     }
 
     public WorldMapFrame Project(
@@ -21,7 +31,12 @@ public sealed class WorldMapProjection : IWorldProjection
         ArgumentNullException.ThrowIfNull(world);
         ArgumentNullException.ThrowIfNull(viewport);
         var lod = _lodPolicy.Select(viewport.MetersPerPixel);
-        var rivers = world.BaseWorld.Rivers
+        var region = world.BaseWorld.RegionIndex.Query(
+            viewport.Bounds,
+            _regionProvider);
+        var rivers = region.RiverIds
+            .OrderBy(id => id)
+            .Select(id => world.BaseWorld.RiversById[id])
             .Where(river => Intersects(viewport.Bounds, river.Points))
             .Select(
                 river => new ProjectedRiver(
@@ -29,9 +44,10 @@ public sealed class WorldMapProjection : IWorldProjection
                     river.WidthClass,
                     river.Points))
             .ToImmutableArray();
-        var cities = world.BaseWorld.Cities.Values
+        var cities = region.CityIds
+            .OrderBy(id => id)
+            .Select(id => world.BaseWorld.Cities[id])
             .Where(city => viewport.Bounds.Contains(city.Position))
-            .OrderBy(city => city.Id)
             .Select(
                 city => new ProjectedCity(
                     city.Id,
@@ -39,9 +55,10 @@ public sealed class WorldMapProjection : IWorldProjection
                     city.Tier,
                     city.Position))
             .ToImmutableArray();
-        var stations = world.BaseWorld.Stations.Values
+        var stations = region.StationIds
+            .OrderBy(id => id)
+            .Select(id => world.BaseWorld.Stations[id])
             .Where(station => viewport.Bounds.Contains(station.Position))
-            .OrderBy(station => station.Id)
             .Select(
                 station => new ProjectedStation(
                     station.Id,
@@ -52,6 +69,12 @@ public sealed class WorldMapProjection : IWorldProjection
         var tracks = lod == MapLod.Regional
             ? ProjectGroups(world.RailTopology, viewport.Bounds)
             : ProjectTracks(world.RailTopology, viewport.Bounds);
+        var nodes = lod == MapLod.Edit
+            ? ProjectNodes(world.RailTopology, viewport.Bounds)
+            : [];
+        var ports = lod == MapLod.Edit
+            ? ProjectPorts(world.RailTopology, viewport.Bounds)
+            : [];
         var connections = lod == MapLod.Edit
             ? ProjectConnections(world.RailTopology, viewport.Bounds)
             : [];
@@ -62,8 +85,44 @@ public sealed class WorldMapProjection : IWorldProjection
             rivers,
             cities,
             stations,
+            nodes,
+            ports,
             tracks,
             connections);
+    }
+
+    private static ImmutableArray<ProjectedNode> ProjectNodes(
+        RailTopology topology,
+        WorldBounds bounds)
+    {
+        return topology.Nodes.Values
+            .Where(node => bounds.Contains(node.Position))
+            .OrderBy(node => node.Id)
+            .Select(
+                node => new ProjectedNode(
+                    node.Id,
+                    node.Kind,
+                    node.Position))
+            .ToImmutableArray();
+    }
+
+    private static ImmutableArray<ProjectedPort> ProjectPorts(
+        RailTopology topology,
+        WorldBounds bounds)
+    {
+        return topology.Ports.Values
+            .Where(
+                port =>
+                    topology.Nodes.TryGetValue(port.NodeId, out var node) &&
+                    bounds.Contains(node.Position))
+            .OrderBy(port => port.Id)
+            .Select(
+                port => new ProjectedPort(
+                    port.Id,
+                    port.NodeId,
+                    port.Direction,
+                    topology.Nodes[port.NodeId].Position))
+            .ToImmutableArray();
     }
 
     private static ImmutableArray<ProjectedTrack> ProjectGroups(
@@ -97,6 +156,8 @@ public sealed class WorldMapProjection : IWorldProjection
             values.Add(new ProjectedTrack(
                 group.Id,
                 points,
+                null,
+                null,
                 0,
                 tracks.Max(track => track.DesignSpeedKph),
                 true));
@@ -112,7 +173,7 @@ public sealed class WorldMapProjection : IWorldProjection
                 continue;
             }
 
-            values.Add(ToProjectedTrack(track, alignment));
+            values.Add(ToProjectedTrack(topology, track, alignment));
         }
 
         return values.ToImmutable();
@@ -130,6 +191,7 @@ public sealed class WorldMapProjection : IWorldProjection
                     topology.Alignments[track.AlignmentId].ControlPoints))
             .Select(
                 track => ToProjectedTrack(
+                    topology,
                     track,
                     topology.Alignments[track.AlignmentId]))
             .ToImmutableArray();
@@ -158,15 +220,70 @@ public sealed class WorldMapProjection : IWorldProjection
     }
 
     private static ProjectedTrack ToProjectedTrack(
+        RailTopology topology,
         TrackEdge track,
         Alignment alignment)
     {
+        var fromNode = topology.Nodes[
+            topology.Ports[track.FromPortId].NodeId];
+        var toNode = topology.Nodes[
+            topology.Ports[track.ToPortId].NodeId];
+        var points = OffsetPoints(
+            alignment.ControlPoints,
+            track.LateralOffsetMillimeters);
+        var forward =
+            points[0].DistanceMetersTo(fromNode.Position) <=
+            points[^1].DistanceMetersTo(fromNode.Position);
+        if (!forward)
+        {
+            points = points.Reverse().ToImmutableArray();
+        }
+
         return new ProjectedTrack(
             track.Id,
-            alignment.ControlPoints,
+            points,
+            fromNode.Id,
+            toNode.Id,
             track.LateralOffsetMillimeters,
             track.DesignSpeedKph,
             false);
+    }
+
+    private static ImmutableArray<WorldPoint> OffsetPoints(
+        ImmutableArray<WorldPoint> points,
+        int offsetMillimeters)
+    {
+        if (offsetMillimeters == 0)
+        {
+            return points;
+        }
+
+        var result = ImmutableArray.CreateBuilder<WorldPoint>(points.Length);
+        for (var index = 0; index < points.Length; index++)
+        {
+            var previous = points[Math.Max(0, index - 1)];
+            var next = points[Math.Min(points.Length - 1, index + 1)];
+            var deltaX =
+                (double)next.XMillimeters - previous.XMillimeters;
+            var deltaY =
+                (double)next.YMillimeters - previous.YMillimeters;
+            var length = Math.Sqrt((deltaX * deltaX) + (deltaY * deltaY));
+            if (length <= 0)
+            {
+                result.Add(points[index]);
+                continue;
+            }
+
+            var offsetX = (-deltaY / length) * offsetMillimeters;
+            var offsetY = (deltaX / length) * offsetMillimeters;
+            result.Add(new WorldPoint(
+                checked((long)Math.Round(
+                    points[index].XMillimeters + offsetX)),
+                checked((long)Math.Round(
+                    points[index].YMillimeters + offsetY))));
+        }
+
+        return result.MoveToImmutable();
     }
 
     private static ImmutableArray<WorldPoint> ConcatenateAlignments(

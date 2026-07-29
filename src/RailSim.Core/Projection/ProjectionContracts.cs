@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using RailSim.Core.Rail;
 using RailSim.Core.World;
 
 namespace RailSim.Core.Projection;
@@ -70,6 +71,14 @@ public interface IWorldProjection
         MapViewport viewport);
 }
 
+public interface IMacroTopologyProjection
+{
+    ImmutableArray<ProjectedTrack> Project(
+        RailTopology topology,
+        WorldBounds viewportBounds,
+        MapLod lod);
+}
+
 public sealed record ProjectedCity(
     StableId SourceId,
     string Name,
@@ -87,9 +96,22 @@ public sealed record ProjectedRiver(
     RiverWidthClass WidthClass,
     ImmutableArray<WorldPoint> Points);
 
+public sealed record ProjectedNode(
+    StableId SourceId,
+    RailNodeKind Kind,
+    WorldPoint Position);
+
+public sealed record ProjectedPort(
+    StableId SourceId,
+    StableId NodeId,
+    RailPortDirection Direction,
+    WorldPoint Position);
+
 public sealed record ProjectedTrack(
     StableId SourceId,
     ImmutableArray<WorldPoint> Points,
+    StableId? FromNodeId,
+    StableId? ToNodeId,
     int LateralOffsetMillimeters,
     int DesignSpeedKph,
     bool IsAggregate);
@@ -108,5 +130,7 @@ public sealed record WorldMapFrame(
     ImmutableArray<ProjectedRiver> Rivers,
     ImmutableArray<ProjectedCity> Cities,
     ImmutableArray<ProjectedStation> Stations,
+    ImmutableArray<ProjectedNode> Nodes,
+    ImmutableArray<ProjectedPort> Ports,
     ImmutableArray<ProjectedTrack> Tracks,
     ImmutableArray<ProjectedConnection> Connections);

@@ -75,7 +75,7 @@ public sealed class WorldEditorSession : ISnapshotContributor
             }
 
             var validation = _validator.Validate(
-                _world.RailTopology,
+                _world,
                 patch);
             var error = validation.Issues.FirstOrDefault(
                 issue =>
@@ -85,6 +85,18 @@ public sealed class WorldEditorSession : ISnapshotContributor
                 return CommandDecision.Reject(
                     error.Code,
                     "Rail edit validation failed.");
+            }
+
+            var unacknowledgedWarning = validation.Issues.FirstOrDefault(
+                issue =>
+                    issue.Severity == RailValidationSeverity.Warning &&
+                    !patch.AcknowledgedWarningCodes.Contains(issue.Code));
+            if (unacknowledgedWarning is not null)
+            {
+                return CommandDecision.Reject(
+                    "rail.warning.unacknowledged",
+                    $"Rail edit warning {unacknowledgedWarning.Code} " +
+                    "requires explicit acknowledgement.");
             }
 
             var candidate = patch.ApplyTo(_world.RailTopology);

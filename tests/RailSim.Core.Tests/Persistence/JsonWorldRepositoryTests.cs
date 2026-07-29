@@ -83,6 +83,47 @@ public sealed class JsonWorldRepositoryTests : IDisposable
                 SearchOption.TopDirectoryOnly));
     }
 
+    [Fact]
+    public void SaveRejectsMissingCityReferenceWithoutCreatingAFile()
+    {
+        var path = Path.Combine(_temporaryDirectory, "invalid-world.json");
+        var generated = new ProceduralWorldGenerator().Generate(
+            WorldGenerationParameters.CreateRegional(7));
+        var station = generated.Stations.Values.OrderBy(item => item.Id).First();
+        var invalidStation = new StationAnchor(
+            station.Id,
+            station.Name,
+            station.Tier,
+            station.Position,
+            new StableId("city:missing"),
+            station.DetailZoneId);
+        var stations = generated.Stations.SetItem(
+            invalidStation.Id,
+            invalidStation);
+        var withoutHash = new GeneratedWorld(
+            generated.Parameters,
+            generated.Terrain,
+            generated.Rivers,
+            generated.Cities,
+            stations,
+            string.Empty);
+        var invalidGenerated = new GeneratedWorld(
+            generated.Parameters,
+            generated.Terrain,
+            generated.Rivers,
+            generated.Cities,
+            stations,
+            WorldContentHasher.HashGeneratedWorld(withoutHash));
+        var world = new WorldState(
+            0,
+            invalidGenerated,
+            RailTopology.Empty);
+
+        Assert.Throws<InvalidDataException>(
+            () => new JsonWorldRepository().Save(path, world));
+        Assert.False(File.Exists(path));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_temporaryDirectory))
@@ -95,12 +136,16 @@ public sealed class JsonWorldRepositoryTests : IDisposable
     {
         var generated = new ProceduralWorldGenerator().Generate(
             WorldGenerationParameters.CreateRegional(seed));
+        var stations = generated.Stations.Values
+            .OrderBy(station => station.Position.XMillimeters)
+            .ThenBy(station => station.Id)
+            .ToArray();
         var draft = new ControlPointSplineStrategy().Build(
             ImmutableArray.Create(
-                Waypoint(0, 0, "station:a"),
-                Waypoint(120, 70, "station:c"),
-                Waypoint(250, 40, "station:d"),
-                Waypoint(400, 120, "station:b")));
+                Waypoint(stations[4]),
+                Waypoint(stations[20]),
+                Waypoint(stations[38]),
+                Waypoint(stations[58])));
         var patch = new DoubleTrackCorridorStrategy(
             new DeterministicStableIdSource($"save-{seed}"))
             .CreatePatch(
@@ -110,15 +155,8 @@ public sealed class JsonWorldRepositoryTests : IDisposable
         return new WorldState(1, generated, patch.ApplyTo(RailTopology.Empty));
     }
 
-    private static DraftWaypoint Waypoint(
-        long xKilometers,
-        long yKilometers,
-        string stationId)
+    private static DraftWaypoint Waypoint(StationAnchor station)
     {
-        return new DraftWaypoint(
-            new WorldPoint(
-                xKilometers * 1_000_000,
-                yKilometers * 1_000_000),
-            new StableId(stationId));
+        return new DraftWaypoint(station.Position, station.Id);
     }
 }

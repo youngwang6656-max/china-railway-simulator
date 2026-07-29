@@ -103,6 +103,55 @@ public sealed class WorldEditorSessionTests
         Assert.Equal(6, section.World.RailTopology.Tracks.Count);
     }
 
+    [Fact]
+    public void CommandHandlersCanFollowAReplacedEditorSession()
+    {
+        var first = CreateSession();
+        var active = first;
+        var bus = new SimulationCommandBus();
+        WorldEditCommandRegistration.Register(bus, () => active);
+        active = CreateSession();
+        bus.Enqueue(
+            new ApplyRailEditCommand(
+                MainLinePatch("replacement-session"),
+                active.Revision),
+            new SimulationTick(1));
+
+        var result = Assert.Single(bus.DispatchDue(new SimulationTick(1)));
+
+        Assert.Equal(CommandStatus.Accepted, result.Status);
+        Assert.Empty(first.World.RailTopology.Tracks);
+        Assert.Equal(6, active.World.RailTopology.Tracks.Count);
+    }
+
+    [Fact]
+    public void EngineeringWarningsRequireExplicitAcknowledgement()
+    {
+        var session = CreateSession();
+        var draft = new ControlPointSplineStrategy().Build(
+            ImmutableArray.Create(
+                Waypoint(0, 0, "station:a"),
+                Waypoint(100, 0, "station:b")));
+        var patch = new DoubleTrackCorridorStrategy(
+            new DeterministicStableIdSource("warning"))
+            .CreatePatch(
+                RailTopology.Empty,
+                draft,
+                new TrackPlacementOptions(3_000, 160));
+
+        var rejected = session.Apply(patch, session.Revision);
+        var acknowledged = patch with
+        {
+            AcknowledgedWarningCodes =
+                ImmutableHashSet.Create("rail.engineering.track_spacing")
+        };
+        var accepted = session.Apply(acknowledged, session.Revision);
+
+        Assert.Equal(CommandStatus.Rejected, rejected.Status);
+        Assert.Equal("rail.warning.unacknowledged", rejected.Code);
+        Assert.Equal(CommandStatus.Accepted, accepted.Status);
+    }
+
     private static WorldEditorSession CreateSession()
     {
         var generated = new ProceduralWorldGenerator().Generate(

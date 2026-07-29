@@ -47,6 +47,29 @@ public sealed record Alignment
             throw new ArgumentOutOfRangeException(nameof(lengthMillimeters));
         }
 
+        var calculatedLength = 0d;
+        for (var index = 1; index < controlPoints.Length; index++)
+        {
+            if (controlPoints[index - 1] == controlPoints[index])
+            {
+                throw new ArgumentException(
+                    "Alignment control points cannot contain a zero-length segment.",
+                    nameof(controlPoints));
+            }
+
+            calculatedLength +=
+                controlPoints[index - 1].DistanceMetersTo(
+                    controlPoints[index]) *
+                1000d;
+        }
+
+        if (checked((long)Math.Round(calculatedLength)) != lengthMillimeters)
+        {
+            throw new ArgumentException(
+                "Alignment length must match its canonical control-point geometry.",
+                nameof(lengthMillimeters));
+        }
+
         Id = id;
         ControlPoints = controlPoints;
         LengthMillimeters = lengthMillimeters;

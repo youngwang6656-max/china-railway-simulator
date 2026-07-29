@@ -26,12 +26,28 @@ public sealed record RailValidationResult(
 public interface IRailEditValidator
 {
     RailValidationResult Validate(
-        RailTopology topology,
+        WorldState world,
         RailGraphPatch patch);
 }
 
 public sealed class RailEditValidator : IRailEditValidator
 {
+    public RailValidationResult Validate(
+        WorldState world,
+        RailGraphPatch patch)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+        var structural = Validate(world.RailTopology, patch);
+        if (structural.HasErrors)
+        {
+            return structural;
+        }
+
+        var issues = structural.Issues.ToBuilder();
+        AddGeometryWarnings(world, patch, issues);
+        return new RailValidationResult(issues.ToImmutable());
+    }
+
     public RailValidationResult Validate(
         RailTopology topology,
         RailGraphPatch patch)
@@ -49,9 +65,10 @@ public sealed class RailEditValidator : IRailEditValidator
             return new RailValidationResult(issues.ToImmutable());
         }
 
+        RailTopology candidate;
         try
         {
-            _ = patch.ApplyTo(topology);
+            candidate = patch.ApplyTo(topology);
         }
         catch (RailTopologyException exception)
         {
@@ -61,6 +78,16 @@ public sealed class RailEditValidator : IRailEditValidator
                 null,
                 null));
             return new RailValidationResult(issues.ToImmutable());
+        }
+
+        if (patch.Intent is RailEditIntent.DoubleTrackCorridor or
+            RailEditIntent.Connector &&
+            patch.AddedTracks.Length > 0)
+        {
+            ValidateDoubleTrackCompleteness(
+                patch,
+                candidate,
+                issues);
         }
 
         foreach (var track in patch.AddedTracks)
@@ -76,5 +103,210 @@ public sealed class RailEditValidator : IRailEditValidator
         }
 
         return new RailValidationResult(issues.ToImmutable());
+    }
+
+    private static void ValidateDoubleTrackCompleteness(
+        RailGraphPatch patch,
+        RailTopology candidate,
+        ImmutableArray<RailValidationIssue>.Builder issues)
+    {
+        foreach (var alignmentGroup in patch.AddedTracks.GroupBy(
+                     track => track.AlignmentId))
+        {
+            var tracks = alignmentGroup.ToArray();
+            var validPair =
+                tracks.Length == 2 &&
+                tracks[0].LateralOffsetMillimeters ==
+                -tracks[1].LateralOffsetMillimeters &&
+                tracks[0].LateralOffsetMillimeters != 0;
+            if (validPair)
+            {
+                var firstFrom = candidate.Ports[tracks[0].FromPortId].NodeId;
+                var firstTo = candidate.Ports[tracks[0].ToPortId].NodeId;
+                var secondFrom = candidate.Ports[tracks[1].FromPortId].NodeId;
+                var secondTo = candidate.Ports[tracks[1].ToPortId].NodeId;
+                validPair =
+                    firstFrom == secondTo &&
+                    firstTo == secondFrom;
+            }
+
+            if (!validPair)
+            {
+                issues.Add(new RailValidationIssue(
+                    "rail.double_track.incomplete",
+                    RailValidationSeverity.Error,
+                    alignmentGroup.Key,
+                    null));
+            }
+        }
+    }
+
+    private static void AddGeometryWarnings(
+        WorldState world,
+        RailGraphPatch patch,
+        ImmutableArray<RailValidationIssue>.Builder issues)
+    {
+        foreach (var alignment in patch.AddedAlignments)
+        {
+            var tracks = patch.AddedTracks
+                .Where(track => track.AlignmentId == alignment.Id)
+                .ToArray();
+            var designSpeed = tracks.Length == 0
+                ? 160
+                : tracks.Max(track => track.DesignSpeedKph);
+            if (HasLowRadius(alignment.ControlPoints, designSpeed))
+            {
+                issues.Add(new RailValidationIssue(
+                    "rail.engineering.low_radius",
+                    RailValidationSeverity.Warning,
+                    alignment.Id,
+                    alignment.ControlPoints[alignment.ControlPoints.Length / 2]));
+            }
+
+            if (HasSteepTerrain(
+                    alignment.ControlPoints,
+                    world.BaseWorld.Terrain,
+                    world.BaseWorld.Parameters.Bounds))
+            {
+                issues.Add(new RailValidationIssue(
+                    "rail.engineering.steep_terrain",
+                    RailValidationSeverity.Warning,
+                    alignment.Id,
+                    alignment.ControlPoints[alignment.ControlPoints.Length / 2]));
+            }
+
+            if (CrossesRiver(
+                    alignment.ControlPoints,
+                    world.BaseWorld.Rivers))
+            {
+                issues.Add(new RailValidationIssue(
+                    "rail.engineering.river_crossing",
+                    RailValidationSeverity.Warning,
+                    alignment.Id,
+                    alignment.ControlPoints[alignment.ControlPoints.Length / 2]));
+            }
+        }
+    }
+
+    private static bool HasLowRadius(
+        ImmutableArray<WorldPoint> points,
+        int designSpeedKph)
+    {
+        var minimumRadiusMeters = Math.Max(
+            300d,
+            designSpeedKph * designSpeedKph / 12d);
+        for (var index = 1; index < points.Length - 1; index++)
+        {
+            var a = points[index - 1];
+            var b = points[index];
+            var c = points[index + 1];
+            var sideA = a.DistanceMetersTo(b);
+            var sideB = b.DistanceMetersTo(c);
+            var sideC = c.DistanceMetersTo(a);
+            var twiceArea = Math.Abs(
+                ((b.XMillimeters - a.XMillimeters) *
+                 (double)(c.YMillimeters - a.YMillimeters)) -
+                ((b.YMillimeters - a.YMillimeters) *
+                 (double)(c.XMillimeters - a.XMillimeters))) /
+                1_000_000d;
+            if (twiceArea <= 0)
+            {
+                continue;
+            }
+
+            var radius =
+                (sideA * sideB * sideC) /
+                (2d * twiceArea);
+            if (radius < minimumRadiusMeters)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool HasSteepTerrain(
+        ImmutableArray<WorldPoint> points,
+        HeightField terrain,
+        WorldBounds bounds)
+    {
+        for (var index = 1; index < points.Length; index++)
+        {
+            var horizontal =
+                points[index - 1].DistanceMetersTo(points[index]);
+            if (horizontal <= 0)
+            {
+                continue;
+            }
+
+            var elevationDifference = Math.Abs(
+                terrain.SampleAt(points[index], bounds) -
+                terrain.SampleAt(points[index - 1], bounds));
+            if (elevationDifference / horizontal > 0.035)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool CrossesRiver(
+        ImmutableArray<WorldPoint> alignment,
+        ImmutableArray<RiverPath> rivers)
+    {
+        for (var alignmentIndex = 1;
+             alignmentIndex < alignment.Length;
+             alignmentIndex++)
+        {
+            foreach (var river in rivers)
+            {
+                for (var riverIndex = 1;
+                     riverIndex < river.Points.Length;
+                     riverIndex++)
+                {
+                    if (SegmentsIntersect(
+                            alignment[alignmentIndex - 1],
+                            alignment[alignmentIndex],
+                            river.Points[riverIndex - 1],
+                            river.Points[riverIndex]))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static bool SegmentsIntersect(
+        WorldPoint a,
+        WorldPoint b,
+        WorldPoint c,
+        WorldPoint d)
+    {
+        static double Cross(
+            WorldPoint origin,
+            WorldPoint first,
+            WorldPoint second)
+        {
+            return
+                ((first.XMillimeters - origin.XMillimeters) *
+                 (double)(second.YMillimeters - origin.YMillimeters)) -
+                ((first.YMillimeters - origin.YMillimeters) *
+                 (double)(second.XMillimeters - origin.XMillimeters));
+        }
+
+        var first = Cross(a, b, c);
+        var second = Cross(a, b, d);
+        var third = Cross(c, d, a);
+        var fourth = Cross(c, d, b);
+        return
+            ((first <= 0 && second >= 0) ||
+             (first >= 0 && second <= 0)) &&
+            ((third <= 0 && fourth >= 0) ||
+             (third >= 0 && fourth <= 0));
     }
 }

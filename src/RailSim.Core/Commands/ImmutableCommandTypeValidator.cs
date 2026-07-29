@@ -37,7 +37,8 @@ internal static class ImmutableCommandTypeValidator
         {
             var definition = type.GetGenericTypeDefinition();
             if (definition == typeof(ImmutableArray<>) ||
-                definition == typeof(ImmutableList<>))
+                definition == typeof(ImmutableList<>) ||
+                definition == typeof(ImmutableHashSet<>))
             {
                 return IsDeeplyImmutable(
                     type.GetGenericArguments()[0],

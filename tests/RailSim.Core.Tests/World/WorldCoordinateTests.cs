@@ -62,4 +62,26 @@ public sealed class WorldCoordinateTests
     {
         Assert.Throws<ArgumentException>(() => new StableId("  "));
     }
+
+    [Fact]
+    public void GeneratedWorldRegionIndexReturnsOnlyIntersectingChunkContent()
+    {
+        var world = new ProceduralWorldGenerator().Generate(
+            WorldGenerationParameters.CreateRegional(20260729));
+        var city = world.Cities.Values.OrderBy(item => item.Id).First();
+        var halfSize = 250_000L;
+        var viewport = new WorldBounds(
+            city.Position.OffsetMillimeters(-halfSize, -halfSize),
+            city.Position.OffsetMillimeters(halfSize, halfSize));
+
+        var selection = world.RegionIndex.Query(
+            viewport,
+            new GridWorldRegionProvider());
+
+        Assert.Contains(city.Id, selection.CityIds);
+        Assert.True(selection.CityIds.Count < world.Cities.Count);
+        Assert.All(
+            selection.ChunkIds,
+            chunk => Assert.Contains(chunk, world.RegionIndex.Chunks.Keys));
+    }
 }

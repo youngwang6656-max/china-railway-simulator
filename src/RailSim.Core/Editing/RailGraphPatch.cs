@@ -3,8 +3,23 @@ using RailSim.Core.Rail;
 
 namespace RailSim.Core.Editing;
 
+public enum RailEditIntent
+{
+    Custom,
+    DoubleTrackCorridor,
+    Connector,
+    Composite
+}
+
 public sealed record RailGraphPatch
 {
+    public RailEditIntent Intent { get; init; }
+
+    public ImmutableArray<World.WorldChunkId> AffectedChunks { get; init; } = [];
+
+    public ImmutableHashSet<string> AcknowledgedWarningCodes { get; init; } =
+        ImmutableHashSet<string>.Empty;
+
     public ImmutableArray<RailNode> RemovedNodes { get; init; } = [];
 
     public ImmutableArray<RailPort> RemovedPorts { get; init; } = [];
@@ -122,6 +137,9 @@ public sealed record RailGraphPatch
     {
         return new RailGraphPatch
         {
+            Intent = Intent,
+            AffectedChunks = AffectedChunks,
+            AcknowledgedWarningCodes = AcknowledgedWarningCodes,
             RemovedNodes = AddedNodes,
             RemovedPorts = AddedPorts,
             RemovedAlignments = AddedAlignments,
@@ -142,6 +160,16 @@ public sealed record RailGraphPatch
         ArgumentNullException.ThrowIfNull(other);
         return new RailGraphPatch
         {
+            Intent = CombineIntent(Intent, other.Intent),
+            AffectedChunks = AffectedChunks
+                .AddRange(other.AffectedChunks)
+                .Distinct()
+                .OrderBy(chunk => chunk.X)
+                .ThenBy(chunk => chunk.Y)
+                .ToImmutableArray(),
+            AcknowledgedWarningCodes =
+                AcknowledgedWarningCodes.Union(
+                    other.AcknowledgedWarningCodes),
             RemovedNodes = RemovedNodes.AddRange(other.RemovedNodes),
             RemovedPorts = RemovedPorts.AddRange(other.RemovedPorts),
             RemovedAlignments =
@@ -160,6 +188,34 @@ public sealed record RailGraphPatch
             AddedConnections =
                 AddedConnections.AddRange(other.AddedConnections)
         };
+    }
+
+    private static RailEditIntent CombineIntent(
+        RailEditIntent first,
+        RailEditIntent second)
+    {
+        if (first == second)
+        {
+            return first;
+        }
+
+        if (first == RailEditIntent.Connector ||
+            second == RailEditIntent.Connector)
+        {
+            return RailEditIntent.Connector;
+        }
+
+        if (first == RailEditIntent.Custom)
+        {
+            return second;
+        }
+
+        if (second == RailEditIntent.Custom)
+        {
+            return first;
+        }
+
+        return RailEditIntent.Composite;
     }
 
     private static void EnsureMatches<TValue>(

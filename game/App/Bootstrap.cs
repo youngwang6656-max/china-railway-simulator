@@ -4,6 +4,7 @@ using RailSim.Core.Commands;
 using RailSim.Core.Hosting;
 using RailSim.Core.Query;
 using RailSim.Core.Time;
+using RailSim.Core.World;
 
 namespace RailSim.App;
 
@@ -15,30 +16,61 @@ public partial class Bootstrap : Control
     private WorldMapView? _map;
     private Label? _status;
     private bool _smokePending;
+    private bool _smokeHistoryOk;
+    private bool _smokePersistenceOk;
     private int _smokeFrames;
     private SimulationRate _rate =
         SimulationRate.FromPreset(SimulationSpeedPreset.Normal);
 
     public override void _Ready()
     {
+        var smokeTest =
+            Array.IndexOf(OS.GetCmdlineUserArgs(), "--smoke-test") >= 0;
         var store = new SnapshotStore();
+        var commandBus = new SimulationCommandBus();
         _query = store;
-        _host = new SimulationHost(
-            new SimulationClock(),
-            new SimulationCommandBus(),
-            Array.Empty<ISimulationSystem>(),
-            store,
-            Array.Empty<ISnapshotContributor>());
         _editor = WorldEditorController.CreateDefault(
             20260729,
             ProjectSettings.GlobalizePath(
-                "user://regional-world.crsim-world.json"));
+                smokeTest
+                    ? "res://../.tools/smoke-world.crsim-world.json"
+                    : "user://regional-world.crsim-world.json"),
+            commandBus);
+        _editor.AttachQuery(store);
+        _host = new SimulationHost(
+            new SimulationClock(),
+            commandBus,
+            Array.Empty<ISimulationSystem>(),
+            store,
+            [_editor]);
 
-        if (Array.IndexOf(OS.GetCmdlineUserArgs(), "--smoke-test") >= 0)
+        if (smokeTest)
         {
             _editor.BuildDemoMainLine();
             _editor.BuildDemoSecondLine();
             _editor.BuildDemoConnector();
+            var connectorUndo = _editor.Undo();
+            var secondLineUndo = _editor.Undo();
+            var mainLineUndo = _editor.Undo();
+            var mainLineRebuild = _editor.BuildDemoMainLine();
+            var secondLineRebuild = _editor.BuildDemoSecondLine();
+            var connectorRebuild = _editor.BuildDemoConnector();
+            _smokeHistoryOk =
+                connectorUndo == CommandStatus.Accepted &&
+                secondLineUndo == CommandStatus.Accepted &&
+                mainLineUndo == CommandStatus.Accepted &&
+                mainLineRebuild == CommandStatus.Accepted &&
+                secondLineRebuild == CommandStatus.Accepted &&
+                connectorRebuild == CommandStatus.Accepted;
+            var expectedHash = WorldContentHasher.HashState(_editor.World);
+            _editor.Save();
+            _editor.NewWorld(_editor.Seed + 1);
+            _editor.Load();
+            _smokePersistenceOk =
+                string.Equals(
+                    expectedHash,
+                    WorldContentHasher.HashState(_editor.World),
+                    StringComparison.Ordinal);
             BuildWorkspace();
             UpdateStatus();
             _smokePending = true;
@@ -67,6 +99,7 @@ public partial class Bootstrap : Control
         }
 
         _host.AdvanceFrame(TimeSpan.FromSeconds(delta), _rate);
+        _map?.QueueRedraw();
         UpdateStatus();
     }
 
@@ -76,15 +109,28 @@ public partial class Bootstrap : Control
         var tick = _host.CurrentTick.Value;
         GD.Print($"RAILSIM_SMOKE tick={tick}");
         var world = _editor.World;
+        var snapshot = _query.GetLatest();
+        var snapshotOk =
+            snapshot.Sections.TryGetValue("world", out var section) &&
+            section is WorldSnapshotSection worldSection &&
+            worldSection.World.Revision == world.Revision &&
+            worldSection.World.RailTopology.Tracks.Count ==
+            world.RailTopology.Tracks.Count;
         var success =
             tick == 4 &&
             world.BaseWorld.Cities.Count == 64 &&
             world.BaseWorld.Stations.Count == 64 &&
-            world.RailTopology.Tracks.Count >= 8;
+            world.RailTopology.Tracks.Count >= 8 &&
+            _smokeHistoryOk &&
+            _smokePersistenceOk &&
+            snapshotOk;
         GD.Print(
             $"RAILSIM_WORLD_SMOKE cities={world.BaseWorld.Cities.Count} " +
             $"stations={world.BaseWorld.Stations.Count} " +
             $"tracks={world.RailTopology.Tracks.Count}");
+        GD.Print($"RAILSIM_HISTORY_SMOKE rebuild={_smokeHistoryOk}");
+        GD.Print($"RAILSIM_SNAPSHOT_SMOKE published={snapshotOk}");
+        GD.Print($"RAILSIM_PERSISTENCE_SMOKE roundtrip={_smokePersistenceOk}");
         GetTree().Quit(success ? 0 : 1);
     }
 
@@ -120,6 +166,14 @@ public partial class Bootstrap : Control
             toolbar,
             "绘制双线",
             () => _editor.SetTool(WorldEditorTool.DrawDoubleTrack));
+        AddButton(
+            toolbar,
+            "绘制联络线",
+            () => _editor.SetTool(WorldEditorTool.DrawConnector));
+        AddButton(
+            toolbar,
+            "切换互通方案",
+            () => _editor.CycleConnectorMovementPlan());
         AddButton(toolbar, "示例干线", () => _editor.BuildDemoMainLine());
         AddButton(toolbar, "线路二", () => _editor.BuildDemoSecondLine());
         AddButton(toolbar, "丁市联络线", () => _editor.BuildDemoConnector());
@@ -198,7 +252,7 @@ public partial class Bootstrap : Control
         }
 
         var snapshot = _query.GetLatest();
-        var world = _editor.World;
+        var world = _editor.DisplayWorld;
         _status.Text =
             $"种子 {_editor.Seed}｜修订 {world.Revision}｜" +
             $"城市 {world.BaseWorld.Cities.Count}｜站点 {world.BaseWorld.Stations.Count}｜" +

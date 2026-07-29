@@ -99,7 +99,7 @@ public sealed record RailTopology
                 $"Track {track.Id} references a missing port.");
         }
 
-        if (!Alignments.ContainsKey(track.AlignmentId))
+        if (!Alignments.TryGetValue(track.AlignmentId, out var alignment))
         {
             throw Error(
                 "rail.track.alignment_missing",
@@ -112,6 +112,27 @@ public sealed record RailTopology
             throw Error(
                 "rail.track.port_direction",
                 $"Track {track.Id} uses incompatible port directions.");
+        }
+
+        var fromNode = Nodes[fromPort.NodeId];
+        var toNode = Nodes[toPort.NodeId];
+        if (fromNode.Id == toNode.Id)
+        {
+            throw Error(
+                "rail.track.same_node",
+                $"Track {track.Id} cannot connect a node to itself.");
+        }
+
+        var first = alignment.ControlPoints[0];
+        var last = alignment.ControlPoints[^1];
+        var endpointsMatch =
+            (first == fromNode.Position && last == toNode.Position) ||
+            (first == toNode.Position && last == fromNode.Position);
+        if (!endpointsMatch)
+        {
+            throw Error(
+                "rail.track.alignment_endpoint_mismatch",
+                $"Track {track.Id} alignment does not join its endpoint nodes.");
         }
 
         return new RailTopology(

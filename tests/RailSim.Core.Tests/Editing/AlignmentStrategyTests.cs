@@ -48,6 +48,8 @@ public sealed class AlignmentStrategyTests
             patch.AddedTracks.Select(track => track.Id).Distinct().Count());
         Assert.Equal(4, patch.AddedNodes.Length);
         Assert.Equal(4, patch.AddedConnections.Length);
+        Assert.Equal(RailEditIntent.DoubleTrackCorridor, patch.Intent);
+        Assert.NotEmpty(patch.AffectedChunks);
     }
 
     [Fact]
@@ -85,7 +87,44 @@ public sealed class AlignmentStrategyTests
                 connection => (
                     connection.NodeId,
                     connection.FromTrackId,
-                    connection.ToTrackId)));
+                connection.ToTrackId)));
+    }
+
+    [Fact]
+    public void PlacementCanReuseExplicitExistingNodeEndpoints()
+    {
+        var existing = new RailNode(
+            new StableId("node:existing"),
+            RailNodeKind.Junction,
+            new WorldPoint(10_000_000, 20_000_000),
+            null);
+        var topology = RailTopology.Empty.AddNode(existing);
+        var draft = new ControlPointSplineStrategy().Build(
+        [
+            new DraftWaypoint(
+                existing.Position,
+                null,
+                existing.Id),
+            new DraftWaypoint(
+                new WorldPoint(110_000_000, 20_000_000),
+                null,
+                null)
+        ]);
+
+        var patch = new DoubleTrackCorridorStrategy(
+            new DeterministicStableIdSource("reuse-node"))
+            .CreatePatch(
+                topology,
+                draft,
+                TrackPlacementOptions.HighSpeedDoubleTrack);
+
+        Assert.Single(patch.AddedNodes);
+        Assert.DoesNotContain(
+            patch.AddedNodes,
+            node => node.Id == existing.Id);
+        Assert.Contains(
+            patch.AddedPorts,
+            port => port.NodeId == existing.Id);
     }
 
     [Fact]
@@ -119,6 +158,75 @@ public sealed class AlignmentStrategyTests
         Assert.Contains(
             result.Issues,
             issue => issue.Code == "rail.connection.node_mismatch");
+    }
+
+    [Fact]
+    public void ValidatorRejectsStructurallyValidPartialDoubleTrack()
+    {
+        var draft = new ControlPointSplineStrategy().Build(
+        [
+            Waypoint(0, 0, "station:a"),
+            Waypoint(100, 0, "station:b")
+        ]);
+        var complete = new DoubleTrackCorridorStrategy(
+            new DeterministicStableIdSource("partial"))
+            .CreatePatch(
+                RailTopology.Empty,
+                draft,
+                TrackPlacementOptions.HighSpeedDoubleTrack);
+        var remainingTrack = complete.AddedTracks[0];
+        var partial = complete with
+        {
+            AddedTracks = [remainingTrack],
+            AddedTrackGroups =
+            [
+                new TrackGroup(
+                    complete.AddedTrackGroups[0].Id,
+                    [remainingTrack.Id])
+            ]
+        };
+
+        var result = new RailEditValidator().Validate(
+            RailTopology.Empty,
+            partial);
+
+        Assert.Contains(
+            result.Issues,
+            issue =>
+                issue.Code == "rail.double_track.incomplete" &&
+                issue.Severity == RailValidationSeverity.Error);
+    }
+
+    [Fact]
+    public void WorldAwareValidatorReportsRiverCrossingWarning()
+    {
+        var generated = new ProceduralWorldGenerator().Generate(
+            WorldGenerationParameters.CreateRegional(55));
+        var river = generated.Rivers[0];
+        var draft = new ControlPointSplineStrategy().Build(
+        [
+            new DraftWaypoint(
+                river.Points[0],
+                new StableId("station:source")),
+            new DraftWaypoint(
+                river.Points[^1],
+                new StableId("station:mouth"))
+        ]);
+        var patch = new DoubleTrackCorridorStrategy(
+            new DeterministicStableIdSource("river-warning"))
+            .CreatePatch(
+                RailTopology.Empty,
+                draft,
+                TrackPlacementOptions.HighSpeedDoubleTrack);
+        var world = new WorldState(0, generated, RailTopology.Empty);
+
+        var result = new RailEditValidator().Validate(world, patch);
+
+        Assert.Contains(
+            result.Issues,
+            issue =>
+                issue.Code == "rail.engineering.river_crossing" &&
+                issue.Severity == RailValidationSeverity.Warning);
     }
 
     private static AlignmentDraft MainLineDraft()

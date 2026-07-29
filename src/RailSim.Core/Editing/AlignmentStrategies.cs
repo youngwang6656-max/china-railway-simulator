@@ -32,6 +32,8 @@ public readonly record struct TrackPlacementOptions(
     int TrackSpacingMillimeters,
     int DesignSpeedKph)
 {
+    public int ChunkSizeMeters { get; init; } = 64_000;
+
     public static TrackPlacementOptions HighSpeedDoubleTrack { get; } =
         new(5_000, 350);
 }
@@ -70,6 +72,11 @@ public sealed class DoubleTrackCorridorStrategy : ITrackPlacementStrategy
             throw new ArgumentOutOfRangeException(nameof(options));
         }
 
+        if (options.ChunkSizeMeters <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options));
+        }
+
         var boundaryIndices = FindBoundaryIndices(draft.Waypoints);
         if (boundaryIndices.Length < 2)
         {
@@ -88,10 +95,24 @@ public sealed class DoubleTrackCorridorStrategy : ITrackPlacementStrategy
         foreach (var index in boundaryIndices)
         {
             var waypoint = draft.Waypoints[index];
-            var existing = waypoint.StationId.HasValue
-                ? topology.Nodes.Values.FirstOrDefault(
-                    node => node.StationId == waypoint.StationId)
-                : null;
+            RailNode? existing = null;
+            if (waypoint.NodeId.HasValue)
+            {
+                if (!topology.Nodes.TryGetValue(
+                        waypoint.NodeId.Value,
+                        out existing))
+                {
+                    throw new ArgumentException(
+                        $"Draft references missing node {waypoint.NodeId.Value}.",
+                        nameof(draft));
+                }
+            }
+            else if (waypoint.StationId.HasValue)
+            {
+                existing = topology.Nodes.Values.FirstOrDefault(
+                    node => node.StationId == waypoint.StationId);
+            }
+
             if (existing is not null)
             {
                 boundaryNodes.Add(existing);
@@ -181,6 +202,16 @@ public sealed class DoubleTrackCorridorStrategy : ITrackPlacementStrategy
             allTrackIds);
         return new RailGraphPatch
         {
+            Intent = RailEditIntent.DoubleTrackCorridor,
+            AffectedChunks = draft.SampledPoints
+                .Select(
+                    point => WorldChunkId.FromPoint(
+                        point,
+                        options.ChunkSizeMeters))
+                .Distinct()
+                .OrderBy(chunk => chunk.X)
+                .ThenBy(chunk => chunk.Y)
+                .ToImmutableArray(),
             AddedNodes = addedNodes.ToImmutable(),
             AddedPorts = addedPorts.ToImmutable(),
             AddedAlignments = addedAlignments.ToImmutable(),
@@ -204,7 +235,8 @@ public sealed class DoubleTrackCorridorStrategy : ITrackPlacementStrategy
         values.Add(0);
         for (var index = 1; index < waypoints.Length - 1; index++)
         {
-            if (waypoints[index].StationId.HasValue)
+            if (waypoints[index].StationId.HasValue ||
+                waypoints[index].NodeId.HasValue)
             {
                 values.Add(index);
             }
@@ -269,6 +301,16 @@ public sealed class ExplicitConnectorStrategy
 
         return RailGraphPatch.Empty with
         {
+            Intent = RailEditIntent.Connector,
+            AffectedChunks = movements
+                .Select(
+                    movement => WorldChunkId.FromPoint(
+                        topology.Nodes[movement.NodeId].Position,
+                        chunkSizeMeters: 64_000))
+                .Distinct()
+                .OrderBy(chunk => chunk.X)
+                .ThenBy(chunk => chunk.Y)
+                .ToImmutableArray(),
             AddedConnections = connections.MoveToImmutable()
         };
     }

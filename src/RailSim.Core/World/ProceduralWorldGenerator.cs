@@ -7,7 +7,11 @@ public interface IWorldGenerator
     GeneratedWorld Generate(WorldGenerationParameters parameters);
 }
 
-public sealed class ProceduralWorldGenerator : IWorldGenerator
+public sealed class ProceduralWorldGenerator :
+    IWorldGenerator,
+    ITerrainGenerator,
+    ICityPlacementStrategy,
+    INameGenerator
 {
     private static readonly string[] NamePrefixes =
     [
@@ -23,12 +27,45 @@ public sealed class ProceduralWorldGenerator : IWorldGenerator
         "宁", "平", "山", "湾", "溪", "县", "阳", "原", "州", "庄"
     ];
 
+    private readonly ITerrainGenerator _terrainGenerator;
+    private readonly ICityPlacementStrategy _cityPlacement;
+    private readonly INameGenerator _nameGenerator;
+
+    public ProceduralWorldGenerator()
+    {
+        _terrainGenerator = this;
+        _cityPlacement = this;
+        _nameGenerator = this;
+    }
+
+    public ProceduralWorldGenerator(
+        ITerrainGenerator terrainGenerator,
+        ICityPlacementStrategy cityPlacement,
+        INameGenerator nameGenerator)
+    {
+        _terrainGenerator = terrainGenerator ??
+            throw new ArgumentNullException(nameof(terrainGenerator));
+        _cityPlacement = cityPlacement ??
+            throw new ArgumentNullException(nameof(cityPlacement));
+        _nameGenerator = nameGenerator ??
+            throw new ArgumentNullException(nameof(nameGenerator));
+    }
+
     public GeneratedWorld Generate(WorldGenerationParameters parameters)
     {
         ArgumentNullException.ThrowIfNull(parameters);
-        var terrain = GenerateTerrain(parameters);
-        var rivers = GenerateRivers(parameters);
-        var cities = GenerateCities(parameters, terrain);
+        var terrain = _terrainGenerator.GenerateTerrain(
+            parameters,
+            SeedDeriver.Derive(parameters.Seed, "terrain"));
+        var rivers = GenerateRivers(parameters, terrain);
+        var cities = _cityPlacement
+            .PlaceCities(
+                parameters,
+                terrain,
+                rivers,
+                SeedDeriver.Derive(parameters.Seed, "cities"),
+                _nameGenerator)
+            .ToImmutableDictionary(city => city.Id);
         var stations = GenerateStations(parameters, cities);
         var withoutHash = new GeneratedWorld(
             parameters,
@@ -37,26 +74,42 @@ public sealed class ProceduralWorldGenerator : IWorldGenerator
             cities,
             stations,
             string.Empty);
-        return withoutHash with
-        {
-            ContentHash = WorldContentHasher.HashGeneratedWorld(withoutHash)
-        };
+        return new GeneratedWorld(
+            parameters,
+            terrain,
+            rivers,
+            cities,
+            stations,
+            WorldContentHasher.HashGeneratedWorld(withoutHash));
     }
 
-    private static HeightField GenerateTerrain(
-        WorldGenerationParameters parameters)
+    public HeightField GenerateTerrain(
+        WorldGenerationParameters parameters,
+        ulong terrainSeed)
     {
-        var seed = SeedDeriver.Derive(parameters.Seed, "terrain");
+        ArgumentNullException.ThrowIfNull(parameters);
         var elevations = new int[
             checked(parameters.HeightSamplesX * parameters.HeightSamplesY)];
         for (var y = 0; y < parameters.HeightSamplesY; y++)
         {
             for (var x = 0; x < parameters.HeightSamplesX; x++)
             {
-                var broad = ValueNoise(x, y, 96, seed);
-                var regional = ValueNoise(x, y, 48, seed ^ 0xA0761D6478BD642FUL);
-                var local = ValueNoise(x, y, 20, seed ^ 0xE7037ED1A0B428DBUL);
-                var detail = ValueNoise(x, y, 8, seed ^ 0x8EBC6AF09C88C6E3UL);
+                var broad = ValueNoise(x, y, 96, terrainSeed);
+                var regional = ValueNoise(
+                    x,
+                    y,
+                    48,
+                    terrainSeed ^ 0xA0761D6478BD642FUL);
+                var local = ValueNoise(
+                    x,
+                    y,
+                    20,
+                    terrainSeed ^ 0xE7037ED1A0B428DBUL);
+                var detail = ValueNoise(
+                    x,
+                    y,
+                    8,
+                    terrainSeed ^ 0x8EBC6AF09C88C6E3UL);
                 var westernRise =
                     ((parameters.HeightSamplesX - 1 - x) * 520) /
                     (parameters.HeightSamplesX - 1);
@@ -119,7 +172,8 @@ public sealed class ProceduralWorldGenerator : IWorldGenerator
     }
 
     private static ImmutableArray<RiverPath> GenerateRivers(
-        WorldGenerationParameters parameters)
+        WorldGenerationParameters parameters,
+        HeightField terrain)
     {
         var random = new DeterministicRandom(
             SeedDeriver.Derive(parameters.Seed, "rivers"));
@@ -130,31 +184,33 @@ public sealed class ProceduralWorldGenerator : IWorldGenerator
              riverIndex < parameters.MajorRiverCount;
              riverIndex++)
         {
-            const int pointCount = 28;
+            const int pointCount = 32;
             var points = ImmutableArray.CreateBuilder<WorldPoint>(pointCount);
-            var marginX = bounds.WidthMillimeters / 20;
-            var startX = random.NextInt64(
-                bounds.Minimum.XMillimeters + marginX,
-                bounds.Maximum.XMillimeters - marginX);
-            var x = startX;
+            var x = bounds.Minimum.XMillimeters;
+            var y = SelectHighSourceY(
+                random,
+                terrain,
+                bounds,
+                x);
+            var searchStep = Math.Max(
+                1L,
+                bounds.HeightMillimeters / 36);
             for (var pointIndex = 0;
                  pointIndex < pointCount;
                  pointIndex++)
             {
-                var y = bounds.Minimum.YMillimeters +
-                    ((bounds.HeightMillimeters * pointIndex) /
+                x = bounds.Minimum.XMillimeters +
+                    ((bounds.WidthMillimeters * pointIndex) /
                      (pointCount - 1));
-                if (pointIndex > 0 && pointIndex < pointCount - 1)
+                if (pointIndex > 0)
                 {
-                    var maximumWobble = Math.Max(
-                        1L,
-                        bounds.WidthMillimeters / 45);
-                    x = Math.Clamp(
-                        x + random.NextInt64(
-                            -maximumWobble,
-                            maximumWobble + 1),
-                        bounds.Minimum.XMillimeters,
-                        bounds.Maximum.XMillimeters);
+                    y = SelectLowestCandidateY(
+                        random,
+                        terrain,
+                        bounds,
+                        x,
+                        y,
+                        searchStep);
                 }
 
                 points.Add(new WorldPoint(x, y));
@@ -171,18 +227,91 @@ public sealed class ProceduralWorldGenerator : IWorldGenerator
         return rivers.MoveToImmutable();
     }
 
-    private static ImmutableDictionary<StableId, CitySite> GenerateCities(
-        WorldGenerationParameters parameters,
-        HeightField terrain)
+    private static long SelectHighSourceY(
+        DeterministicRandom random,
+        HeightField terrain,
+        WorldBounds bounds,
+        long x)
     {
-        var random = new DeterministicRandom(
-            SeedDeriver.Derive(parameters.Seed, "cities"));
-        var nameRandom = new DeterministicRandom(
+        var bestY = bounds.Minimum.YMillimeters;
+        var bestElevation = int.MinValue;
+        for (var candidateIndex = 0; candidateIndex < 16; candidateIndex++)
+        {
+            var candidateY = random.NextInt64(
+                bounds.Minimum.YMillimeters,
+                bounds.Maximum.YMillimeters + 1);
+            var elevation = terrain.SampleAt(
+                new WorldPoint(x, candidateY),
+                bounds);
+            if (elevation > bestElevation)
+            {
+                bestElevation = elevation;
+                bestY = candidateY;
+            }
+        }
+
+        return bestY;
+    }
+
+    private static long SelectLowestCandidateY(
+        DeterministicRandom random,
+        HeightField terrain,
+        WorldBounds bounds,
+        long x,
+        long currentY,
+        long searchStep)
+    {
+        var bestY = currentY;
+        var bestScore = long.MaxValue;
+        for (var offset = -3; offset <= 3; offset++)
+        {
+            var jitter = random.NextInt64(
+                -(searchStep / 4),
+                (searchStep / 4) + 1);
+            var candidateY = Math.Clamp(
+                currentY + (offset * searchStep) + jitter,
+                bounds.Minimum.YMillimeters,
+                bounds.Maximum.YMillimeters);
+            var elevation = terrain.SampleAt(
+                new WorldPoint(x, candidateY),
+                bounds);
+            var score = (elevation * 1_000L) +
+                random.NextInt32(1_000);
+            if (score < bestScore)
+            {
+                bestScore = score;
+                bestY = candidateY;
+            }
+        }
+
+        return bestY;
+    }
+
+    public ImmutableArray<CitySite> PlaceCities(
+        WorldGenerationParameters parameters,
+        HeightField terrain,
+        ImmutableArray<RiverPath> rivers,
+        ulong placementSeed,
+        INameGenerator nameGenerator)
+    {
+        ArgumentNullException.ThrowIfNull(parameters);
+        ArgumentNullException.ThrowIfNull(terrain);
+        ArgumentNullException.ThrowIfNull(nameGenerator);
+        if (rivers.IsDefault)
+        {
+            throw new ArgumentException(
+                "River collection must be initialized.",
+                nameof(rivers));
+        }
+
+        var random = new DeterministicRandom(placementSeed);
+        var names = nameGenerator.GenerateCityNames(
+            parameters.CityCount,
             SeedDeriver.Derive(parameters.Seed, "names"));
         var tiers = CreateTierSequence(parameters);
-        var cities = ImmutableDictionary.CreateBuilder<StableId, CitySite>();
+        var cities = ImmutableArray.CreateBuilder<CitySite>(
+            parameters.CityCount);
         var positions = new List<WorldPoint>(parameters.CityCount);
-        var usedNames = new HashSet<string>(StringComparer.Ordinal);
 
         for (var index = 0; index < tiers.Length; index++)
         {
@@ -192,7 +321,11 @@ public sealed class ProceduralWorldGenerator : IWorldGenerator
             var accepted = false;
             for (var attempt = 0; attempt < 2_000; attempt++)
             {
-                candidate = NextInteriorPoint(random, parameters.Bounds);
+                candidate = NextCityCandidate(
+                    random,
+                    parameters.Bounds,
+                    rivers,
+                    tier);
                 var spacingScale = Math.Max(0.25, 1d - (attempt / 2_000d));
                 var requiredSpacing = minimumSpacing * spacingScale;
                 var suitableTerrain =
@@ -209,22 +342,59 @@ public sealed class ProceduralWorldGenerator : IWorldGenerator
 
             if (!accepted)
             {
-                candidate = NextInteriorPoint(random, parameters.Bounds);
+                candidate = NextCityCandidate(
+                    random,
+                    parameters.Bounds,
+                    rivers,
+                    tier);
             }
 
             var id = new StableId($"city:{index:D3}");
-            var name = NextUniqueName(nameRandom, usedNames);
             var city = new CitySite(
                 id,
-                name,
+                names[index],
                 tier,
                 candidate,
                 PopulationWeight(tier));
-            cities.Add(id, city);
+            cities.Add(city);
             positions.Add(candidate);
         }
 
-        return cities.ToImmutable();
+        return cities.MoveToImmutable();
+    }
+
+    private static WorldPoint NextCityCandidate(
+        DeterministicRandom random,
+        WorldBounds bounds,
+        ImmutableArray<RiverPath> rivers,
+        CityTier tier)
+    {
+        if (tier is not (CityTier.Mega or CityTier.Large) ||
+            rivers.IsEmpty)
+        {
+            return NextInteriorPoint(random, bounds);
+        }
+
+        var river = rivers[random.NextInt32(rivers.Length)];
+        var anchor = river.Points[random.NextInt32(river.Points.Length)];
+        const long maximumOffsetMillimeters = 140_000_000;
+        var marginX = Math.Max(1L, bounds.WidthMillimeters / 20);
+        var marginY = Math.Max(1L, bounds.HeightMillimeters / 20);
+        return new WorldPoint(
+            Math.Clamp(
+                anchor.XMillimeters +
+                random.NextInt64(
+                    -maximumOffsetMillimeters,
+                    maximumOffsetMillimeters + 1),
+                bounds.Minimum.XMillimeters + marginX,
+                bounds.Maximum.XMillimeters - marginX),
+            Math.Clamp(
+                anchor.YMillimeters +
+                random.NextInt64(
+                    -maximumOffsetMillimeters,
+                    maximumOffsetMillimeters + 1),
+                bounds.Minimum.YMillimeters + marginY,
+                bounds.Maximum.YMillimeters - marginY));
     }
 
     private static ImmutableDictionary<StableId, StationAnchor> GenerateStations(
@@ -312,6 +482,28 @@ public sealed class ProceduralWorldGenerator : IWorldGenerator
         }
 
         throw new InvalidOperationException("The configured name set is exhausted.");
+    }
+
+    public ImmutableArray<string> GenerateCityNames(
+        int count,
+        ulong nameSeed)
+    {
+        var combinationCount = checked(
+            NamePrefixes.Length * NameSuffixes.Length);
+        if (count <= 0 || count > combinationCount)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count));
+        }
+
+        var random = new DeterministicRandom(nameSeed);
+        var usedNames = new HashSet<string>(StringComparer.Ordinal);
+        var names = ImmutableArray.CreateBuilder<string>(count);
+        for (var index = 0; index < count; index++)
+        {
+            names.Add(NextUniqueName(random, usedNames));
+        }
+
+        return names.MoveToImmutable();
     }
 
     private static double MinimumSpacingMeters(CityTier tier)

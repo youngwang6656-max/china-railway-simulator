@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text;
 using System.Text.Json;
 using RailSim.Core.Rail;
 using RailSim.Core.World;
@@ -19,6 +20,7 @@ public sealed class JsonWorldRepository : IWorldRepository
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(world);
+        WorldStateValidator.Validate(world);
         var fullPath = Path.GetFullPath(path);
         var directory = Path.GetDirectoryName(fullPath) ??
             throw new ArgumentException(
@@ -30,7 +32,27 @@ public sealed class JsonWorldRepository : IWorldRepository
         {
             var document = ToDocument(world);
             var json = JsonSerializer.Serialize(document, JsonOptions);
-            File.WriteAllText(temporaryPath, json);
+            using (var stream = new FileStream(
+                       temporaryPath,
+                       FileMode.CreateNew,
+                       FileAccess.Write,
+                       FileShare.None,
+                       bufferSize: 16 * 1024,
+                       FileOptions.WriteThrough))
+            {
+                using (var writer = new StreamWriter(
+                           stream,
+                           new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+                           bufferSize: 16 * 1024,
+                           leaveOpen: true))
+                {
+                    writer.Write(json);
+                    writer.Flush();
+                }
+
+                stream.Flush(flushToDisk: true);
+            }
+
             var verified = Load(temporaryPath);
             if (!string.Equals(
                     WorldContentHasher.HashState(world),
@@ -95,7 +117,8 @@ public sealed class JsonWorldRepository : IWorldRepository
         catch (Exception exception)
             when (exception is ArgumentException or
                   InvalidOperationException or
-                  OverflowException)
+                  OverflowException or
+                  NullReferenceException)
         {
             throw new InvalidDataException(
                 "World document failed structural validation.",
@@ -266,6 +289,7 @@ public sealed class JsonWorldRepository : IWorldRepository
                 "World state content hash does not match the document.");
         }
 
+        WorldStateValidator.Validate(world);
         return world;
     }
 

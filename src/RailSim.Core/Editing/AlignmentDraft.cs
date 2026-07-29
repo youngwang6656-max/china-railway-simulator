@@ -5,7 +5,8 @@ namespace RailSim.Core.Editing;
 
 public readonly record struct DraftWaypoint(
     WorldPoint Position,
-    StableId? StationId);
+    StableId? StationId,
+    StableId? NodeId = null);
 
 public sealed record AlignmentDraft
 {

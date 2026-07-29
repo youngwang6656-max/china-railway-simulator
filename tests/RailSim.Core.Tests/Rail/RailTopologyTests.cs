@@ -75,6 +75,66 @@ public sealed class RailTopologyTests
     }
 
     [Fact]
+    public void AlignmentRejectsDegenerateOrFalseLengthGeometry()
+    {
+        Assert.Throws<ArgumentException>(
+            () => new Alignment(
+                Id("alignment:degenerate"),
+                [Point(10, 10), Point(10, 10)],
+                100_000));
+        Assert.Throws<ArgumentException>(
+            () => new Alignment(
+                Id("alignment:false-length"),
+                [Point(0, 0), Point(100, 0)],
+                99_000));
+    }
+
+    [Fact]
+    public void TrackAlignmentMustJoinItsEndpointNodes()
+    {
+        var fromNode = new RailNode(
+            Id("node:from"),
+            RailNodeKind.Endpoint,
+            Point(0, 0),
+            null);
+        var toNode = new RailNode(
+            Id("node:to"),
+            RailNodeKind.Endpoint,
+            Point(100, 0),
+            null);
+        var fromPort = new RailPort(
+            Id("port:from"),
+            fromNode.Id,
+            RailPortDirection.Outbound);
+        var toPort = new RailPort(
+            Id("port:to"),
+            toNode.Id,
+            RailPortDirection.Inbound);
+        var misaligned = new Alignment(
+            Id("alignment:misaligned"),
+            [Point(0, 0), Point(200, 0)],
+            200_000);
+        var track = new TrackEdge(
+            Id("track:misaligned"),
+            fromPort.Id,
+            toPort.Id,
+            misaligned.Id,
+            0,
+            160);
+        var topology = RailTopology.Empty
+            .AddNode(fromNode)
+            .AddNode(toNode)
+            .AddPort(fromPort)
+            .AddPort(toPort)
+            .AddAlignment(misaligned);
+
+        var exception = Assert.Throws<RailTopologyException>(
+            () => topology.AddTrack(track));
+
+        Assert.Equal("rail.track.alignment_endpoint_mismatch", exception.Code);
+    }
+
+    [Fact]
     public void WorldStateKeepsGeneratedWorldSeparateFromTopology()
     {
         var generated = new ProceduralWorldGenerator().Generate(

@@ -115,10 +115,55 @@ public sealed record RiverPath
     public ImmutableArray<WorldPoint> Points { get; }
 }
 
-public sealed record GeneratedWorld(
-    WorldGenerationParameters Parameters,
-    HeightField Terrain,
-    ImmutableArray<RiverPath> Rivers,
-    ImmutableDictionary<StableId, CitySite> Cities,
-    ImmutableDictionary<StableId, StationAnchor> Stations,
-    string ContentHash);
+public sealed class GeneratedWorld
+{
+    public GeneratedWorld(
+        WorldGenerationParameters parameters,
+        HeightField terrain,
+        ImmutableArray<RiverPath> rivers,
+        ImmutableDictionary<StableId, CitySite> cities,
+        ImmutableDictionary<StableId, StationAnchor> stations,
+        string contentHash)
+    {
+        Parameters = parameters ??
+            throw new ArgumentNullException(nameof(parameters));
+        Terrain = terrain ??
+            throw new ArgumentNullException(nameof(terrain));
+        if (rivers.IsDefault)
+        {
+            throw new ArgumentException(
+                "River collection must be initialized.",
+                nameof(rivers));
+        }
+
+        Rivers = rivers;
+        Cities = cities ??
+            throw new ArgumentNullException(nameof(cities));
+        Stations = stations ??
+            throw new ArgumentNullException(nameof(stations));
+        ContentHash = contentHash ??
+            throw new ArgumentNullException(nameof(contentHash));
+        RiversById = rivers.ToImmutableDictionary(river => river.Id);
+        RegionIndex = WorldRegionIndex.Build(
+            parameters,
+            rivers,
+            cities.Values,
+            stations.Values);
+    }
+
+    public WorldGenerationParameters Parameters { get; }
+
+    public HeightField Terrain { get; }
+
+    public ImmutableArray<RiverPath> Rivers { get; }
+
+    public ImmutableDictionary<StableId, RiverPath> RiversById { get; }
+
+    public ImmutableDictionary<StableId, CitySite> Cities { get; }
+
+    public ImmutableDictionary<StableId, StationAnchor> Stations { get; }
+
+    public string ContentHash { get; }
+
+    public WorldRegionIndex RegionIndex { get; }
+}

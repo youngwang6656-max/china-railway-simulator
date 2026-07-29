@@ -47,6 +47,53 @@ public sealed class WorldMapProjectionTests
     }
 
     [Fact]
+    public void PhysicalTrackGeometryIsOffsetAndOrderedInTravelDirection()
+    {
+        var world = CreateWorldWithMainLine();
+        var frame = new WorldMapProjection(new DefaultMapLodPolicy())
+            .Project(
+                world,
+                new MapViewport(
+                    world.BaseWorld.Parameters.Bounds,
+                    metersPerPixel: 100));
+
+        foreach (var projected in frame.Tracks)
+        {
+            var track = world.RailTopology.Tracks[projected.SourceId];
+            var fromNode = world.RailTopology.Nodes[
+                world.RailTopology.Ports[track.FromPortId].NodeId];
+            var toNode = world.RailTopology.Nodes[
+                world.RailTopology.Ports[track.ToPortId].NodeId];
+
+            Assert.Equal(fromNode.Id, projected.FromNodeId);
+            Assert.Equal(toNode.Id, projected.ToNodeId);
+            Assert.InRange(
+                projected.Points[0].DistanceMetersTo(fromNode.Position),
+                2.4,
+                2.6);
+            Assert.InRange(
+                projected.Points[^1].DistanceMetersTo(toNode.Position),
+                2.4,
+                2.6);
+        }
+
+        var firstAlignment = world.RailTopology.Alignments.Values
+            .OrderBy(alignment => alignment.Id)
+            .First();
+        var pair = frame.Tracks
+            .Where(
+                projected =>
+                    world.RailTopology.Tracks[projected.SourceId].AlignmentId ==
+                    firstAlignment.Id)
+            .ToArray();
+        Assert.Equal(2, pair.Length);
+        Assert.InRange(
+            pair[0].Points[0].DistanceMetersTo(pair[1].Points[^1]),
+            4.9,
+            5.1);
+    }
+
+    [Fact]
     public void EditLodIncludesOnlyExplicitConnections()
     {
         var world = CreateWorldWithMainLine();
@@ -59,6 +106,12 @@ public sealed class WorldMapProjectionTests
 
         Assert.Equal(MapLod.Edit, frame.Lod);
         Assert.Equal(4, frame.Connections.Length);
+        Assert.Equal(
+            world.RailTopology.Nodes.Count,
+            frame.Nodes.Length);
+        Assert.Equal(
+            world.RailTopology.Ports.Count,
+            frame.Ports.Length);
         Assert.Equal(
             world.RailTopology.Connections.Keys.OrderBy(id => id),
             frame.Connections.Select(item => item.SourceId).OrderBy(id => id));
