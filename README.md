@@ -74,7 +74,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1
 ```
 
-脚本离线友好地执行格式、Release/Debug 构建、125 项以上测试、75% 覆盖率门，
+脚本离线友好地执行格式、Release/Debug 构建、126 项以上测试、75% 覆盖率门，
 并真正实例化地图 UI 完成三帧 Godot 无界面冒烟。成功结尾应包含：
 
 ```text

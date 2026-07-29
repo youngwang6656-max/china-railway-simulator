@@ -106,7 +106,7 @@ try {
     $totalTests = [int]$counters.total
     $passedTests = [int]$counters.passed
     $failedTests = [int]$counters.failed
-    if ($failedTests -ne 0 -or $totalTests -lt 125 -or $passedTests -lt 125) {
+    if ($failedTests -ne 0 -or $totalTests -lt 126 -or $passedTests -lt 126) {
         throw "Invalid test totals: total=$totalTests passed=$passedTests failed=$failedTests."
     }
 

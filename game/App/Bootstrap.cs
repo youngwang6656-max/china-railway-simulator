@@ -171,11 +171,21 @@ public partial class Bootstrap : Control
     private static (bool Warning, bool Connector, bool EditTools)
         RunManualToolSmoke()
     {
+        var commandBus = new SimulationCommandBus();
         var editor = WorldEditorController.CreateDefault(
             20260729,
             ProjectSettings.GlobalizePath(
                 "res://../.tools/manual-smoke-world.crsim-world.json"),
-            new SimulationCommandBus());
+            commandBus);
+        var store = new SnapshotStore();
+        var host = new SimulationHost(
+            new SimulationClock(),
+            commandBus,
+            Array.Empty<ISimulationSystem>(),
+            store,
+            [editor]);
+        editor.AttachQuery(store);
+        editor.AttachHost(host);
         editor.BuildDemoMainLine();
         editor.BuildDemoSecondLine();
         editor.SetTool(WorldEditorTool.DrawDoubleTrack);

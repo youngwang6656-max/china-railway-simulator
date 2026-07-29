@@ -102,6 +102,28 @@ public sealed class RailTopologyEditStrategyTests
                     patch.Invert().ApplyTo(candidate))));
     }
 
+    [Fact]
+    public void DeletingOnlyAConnectionInvalidatesItsNodeChunk()
+    {
+        var world = CreateWorld();
+        var connection = world.RailTopology.Connections.Values
+            .OrderBy(item => item.Id)
+            .First();
+        var patch = new RailTopologyEditStrategy(
+            new DeterministicStableIdSource("delete-connection"))
+            .CreateDeletePatch(
+                world.RailTopology,
+                ImmutableHashSet.Create(connection.Id),
+                chunkSizeMeters: 64_000);
+        var expected = WorldChunkId.FromPoint(
+            world.RailTopology.Nodes[connection.NodeId].Position,
+            chunkSizeMeters: 64_000);
+
+        Assert.Contains(expected, patch.AffectedChunks);
+        Assert.Single(patch.RemovedConnections);
+        Assert.Empty(patch.RemovedTracks);
+    }
+
     private static WorldState CreateWorld()
     {
         var generated = new ProceduralWorldGenerator().Generate(

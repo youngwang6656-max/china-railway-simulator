@@ -28,10 +28,8 @@ public sealed class WorldEditorController : ISnapshotContributor
     private readonly string _savePath;
     private readonly List<DraftWaypoint> _draftWaypoints = [];
     private WorldEditorSession _session = null!;
-    private readonly SimulationCommandBus _commandBus;
     private ISimulationQuery? _query;
     private SimulationHost? _host;
-    private long _commandTick;
     private StableId? _mainGroupId;
     private StableId? _secondLineGroupId;
     private StableId? _connectorGroupId;
@@ -53,12 +51,11 @@ public sealed class WorldEditorController : ISnapshotContributor
         _generator = generator;
         _projection = projection;
         _repository = repository;
-        _commandBus = commandBus ??
-            throw new ArgumentNullException(nameof(commandBus));
+        ArgumentNullException.ThrowIfNull(commandBus);
         _savePath = savePath;
         NewWorld(seed);
         WorldEditCommandRegistration.Register(
-            _commandBus,
+            commandBus,
             () => _session);
     }
 
@@ -895,25 +892,18 @@ public sealed class WorldEditorController : ISnapshotContributor
 
     private CommandResult Submit(ISimulationCommand command)
     {
-        CommandResult result;
-        if (_host is null)
-        {
-            var tick = new SimulationTick(checked(++_commandTick));
-            var envelope = _commandBus.Enqueue(command, tick);
-            result = _commandBus.DispatchDue(tick).Single(
-                item => item.Sequence == envelope.Sequence);
-        }
-        else
-        {
-            var envelope = _host.Submit(command);
-            result = _host
-                .AdvanceFrame(
-                    SimulationClock.StepDuration,
-                    SimulationRate.FromPreset(
-                        SimulationSpeedPreset.Normal))
-                .CommandResults
-                .Single(item => item.Sequence == envelope.Sequence);
-        }
+        var host = _host ??
+            throw new InvalidOperationException(
+                "World editor must be attached to the simulation host " +
+                "before commands are submitted.");
+        var envelope = host.Submit(command);
+        var result = host
+            .AdvanceFrame(
+                SimulationClock.StepDuration,
+                SimulationRate.FromPreset(
+                    SimulationSpeedPreset.Normal))
+            .CommandResults
+            .Single(item => item.Sequence == envelope.Sequence);
 
         LastMessage = result.Status == CommandStatus.Accepted
             ? "操作成功"
@@ -925,7 +915,6 @@ public sealed class WorldEditorController : ISnapshotContributor
     private void ResetSession(WorldState world)
     {
         _session = new WorldEditorSession(world, new RailEditValidator());
-        _commandTick = 0;
     }
 
     private bool GroupExists(StableId? groupId)

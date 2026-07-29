@@ -127,7 +127,7 @@ public sealed class WorldChunkSnapshotCodec
             checked(id.Y * size));
         return new WorldBounds(
             minimum,
-            minimum.OffsetMillimeters(size, size));
+            minimum.OffsetMillimeters(size - 1, size - 1));
     }
 
     private static string[] Values(

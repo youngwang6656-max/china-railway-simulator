@@ -139,14 +139,29 @@ public sealed class RailTopologyEditStrategy
             .OrderBy(node => node.Id)
             .ToImmutableArray();
 
-        return new RailGraphPatch
-        {
-            Intent = RailEditIntent.Custom,
-            AffectedChunks = Cover(
+        var affectedChunks = Cover(
                 removedAlignments.Select(
                     alignment => alignment.ControlPoints),
                 chunkSizeMeters,
-                removedTracks),
+                removedTracks)
+            .AddRange(
+                removedConnections.Select(
+                    connection => WorldChunkId.FromPoint(
+                        topology.Nodes[connection.NodeId].Position,
+                        chunkSizeMeters)))
+            .AddRange(
+                removedNodes.Select(
+                    node => WorldChunkId.FromPoint(
+                        node.Position,
+                        chunkSizeMeters)))
+            .Distinct()
+            .OrderBy(chunk => chunk.X)
+            .ThenBy(chunk => chunk.Y)
+            .ToImmutableArray();
+        return new RailGraphPatch
+        {
+            Intent = RailEditIntent.Custom,
+            AffectedChunks = affectedChunks,
             RemovedNodes = removedNodes,
             RemovedPorts = removedPorts,
             RemovedAlignments = removedAlignments,
