@@ -1,5 +1,7 @@
 namespace RailSim.Core.World;
 
+using System.Collections.Immutable;
+
 public enum CityTier
 {
     Mega,
@@ -80,3 +82,43 @@ public sealed record StationAnchor
 
     public StableId? DetailZoneId { get; }
 }
+
+public enum RiverWidthClass
+{
+    Regional,
+    Major
+}
+
+public sealed record RiverPath
+{
+    public RiverPath(
+        StableId id,
+        RiverWidthClass widthClass,
+        ImmutableArray<WorldPoint> points)
+    {
+        if (points.Length < 2)
+        {
+            throw new ArgumentException(
+                "A river path requires at least two points.",
+                nameof(points));
+        }
+
+        Id = id;
+        WidthClass = widthClass;
+        Points = points;
+    }
+
+    public StableId Id { get; }
+
+    public RiverWidthClass WidthClass { get; }
+
+    public ImmutableArray<WorldPoint> Points { get; }
+}
+
+public sealed record GeneratedWorld(
+    WorldGenerationParameters Parameters,
+    HeightField Terrain,
+    ImmutableArray<RiverPath> Rivers,
+    ImmutableDictionary<StableId, CitySite> Cities,
+    ImmutableDictionary<StableId, StationAnchor> Stations,
+    string ContentHash);
