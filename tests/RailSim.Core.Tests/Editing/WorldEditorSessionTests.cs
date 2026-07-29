@@ -177,13 +177,39 @@ public sealed class WorldEditorSessionTests
         Assert.False(session.CanUndo);
     }
 
-    private static WorldEditorSession CreateSession()
+    [Fact]
+    public void OptionalHistoryStoreRestoresUndoAcrossSessions()
+    {
+        var store = new RecordingHistoryStore();
+        var first = CreateSession(store);
+        var baseline = first.CurrentHash;
+        Assert.Equal(
+            CommandStatus.Accepted,
+            first.Apply(MainLinePatch(), first.Revision).Status);
+        var editedWorld = first.World;
+
+        var restored = new WorldEditorSession(
+            editedWorld,
+            new RailEditValidator(),
+            store);
+
+        Assert.True(restored.CanUndo);
+        Assert.Equal(
+            CommandStatus.Accepted,
+            restored.Undo(restored.Revision).Status);
+        Assert.Equal(baseline, restored.CurrentHash);
+        Assert.True(store.SaveCount >= 2);
+    }
+
+    private static WorldEditorSession CreateSession(
+        IEditHistoryStore? historyStore = null)
     {
         var generated = new ProceduralWorldGenerator().Generate(
             WorldGenerationParameters.CreateRegional(20260729));
         return new WorldEditorSession(
             new WorldState(0, generated, RailTopology.Empty),
-            new RailEditValidator());
+            new RailEditValidator(),
+            historyStore);
     }
 
     private static RailGraphPatch MainLinePatch(string scope = "main")
@@ -212,5 +238,25 @@ public sealed class WorldEditorSessionTests
                 xKilometers * 1_000_000,
                 yKilometers * 1_000_000),
             stationId is null ? null : new StableId(stationId));
+    }
+
+    private sealed class RecordingHistoryStore : IEditHistoryStore
+    {
+        private EditHistorySnapshot? _snapshot;
+
+        public int SaveCount { get; private set; }
+
+        public EditHistorySnapshot? Load(StableId worldId)
+        {
+            return _snapshot;
+        }
+
+        public void Save(
+            StableId worldId,
+            EditHistorySnapshot history)
+        {
+            SaveCount++;
+            _snapshot = history;
+        }
     }
 }

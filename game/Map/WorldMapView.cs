@@ -18,8 +18,12 @@ public partial class WorldMapView : Control
     private double _metersPerPixel = 800;
     private bool _initialized;
     private bool _panning;
+    private bool _boxSelecting;
     private Vector2 _lastPointer;
+    private Vector2 _boxStart;
+    private Vector2 _boxEnd;
     private int _draggedWaypoint = -1;
+    private int _selectedWaypoint = -1;
 
     public double MetersPerPixel => _metersPerPixel;
 
@@ -95,6 +99,7 @@ public partial class WorldMapView : Control
         DrawNodesAndPorts(frame);
         DrawConnections(frame);
         DrawDraft();
+        DrawSelectionBox();
         DrawOverlay(frame);
     }
 
@@ -150,11 +155,38 @@ public partial class WorldMapView : Control
 
         if (!mouse.Pressed)
         {
+            if (_boxSelecting)
+            {
+                _boxSelecting = false;
+                _boxEnd = mouse.Position;
+                SelectBoxContents();
+                AcceptEvent();
+            }
+
             _draggedWaypoint = -1;
             return;
         }
 
         GrabFocus();
+        if (_controller.CurrentTool == WorldEditorTool.BoxSelect)
+        {
+            _boxSelecting = true;
+            _boxStart = mouse.Position;
+            _boxEnd = mouse.Position;
+            QueueRedraw();
+            AcceptEvent();
+            return;
+        }
+
+        if (_controller.CurrentTool == WorldEditorTool.SplitTrack)
+        {
+            _controller.SplitTrackAt(
+                ScreenToWorld(mouse.Position),
+                _metersPerPixel * 15);
+            AcceptEvent();
+            return;
+        }
+
         if (_controller.CurrentTool == WorldEditorTool.Inspect)
         {
             _controller.InspectAt(
@@ -172,11 +204,14 @@ public partial class WorldMapView : Control
         }
 
         _draggedWaypoint = HitDraftWaypoint(mouse.Position);
+        _selectedWaypoint = _draggedWaypoint;
         if (_draggedWaypoint < 0)
         {
             _controller.AddWaypoint(
                 ScreenToWorld(mouse.Position),
                 _metersPerPixel * 15);
+            _selectedWaypoint =
+                _controller.DraftWaypoints.Length - 1;
         }
 
         AcceptEvent();
@@ -190,6 +225,14 @@ public partial class WorldMapView : Control
             _centerXMillimeters -= delta.X * _metersPerPixel * 1000d;
             _centerYMillimeters -= delta.Y * _metersPerPixel * 1000d;
             _lastPointer = motion.Position;
+            QueueRedraw();
+            AcceptEvent();
+            return;
+        }
+
+        if (_boxSelecting)
+        {
+            _boxEnd = motion.Position;
             QueueRedraw();
             AcceptEvent();
             return;
@@ -216,6 +259,29 @@ public partial class WorldMapView : Control
         else if (key.Keycode == Key.Escape)
         {
             _controller.CancelDraft();
+            _selectedWaypoint = -1;
+            AcceptEvent();
+        }
+        else if (key.Keycode is Key.Delete or Key.Backspace)
+        {
+            if ((_controller.CurrentTool is
+                     WorldEditorTool.DrawDoubleTrack or
+                     WorldEditorTool.DrawConnector) &&
+                _controller.DraftWaypoints.Length > 0)
+            {
+                var index = _selectedWaypoint >= 0
+                    ? _selectedWaypoint
+                    : _controller.DraftWaypoints.Length - 1;
+                _controller.RemoveWaypoint(index);
+                _selectedWaypoint = Math.Min(
+                    index,
+                    _controller.DraftWaypoints.Length - 1);
+            }
+            else
+            {
+                _controller.DeleteSelection();
+            }
+
             AcceptEvent();
         }
     }
@@ -302,11 +368,14 @@ public partial class WorldMapView : Control
             var points = track.Points
                 .Select(WorldToScreen)
                 .ToArray();
-            var color = track.IsAggregate
-                ? new Color(0.96f, 0.68f, 0.25f)
-                : track.LateralOffsetMillimeters < 0
-                    ? new Color(0.18f, 0.82f, 0.98f)
-                    : new Color(0.36f, 0.92f, 0.57f);
+            var selected = _controller.IsSelected(track.SourceId);
+            var color = selected
+                ? new Color(1f, 0.3f, 0.12f)
+                : track.IsAggregate
+                    ? new Color(0.96f, 0.68f, 0.25f)
+                    : track.LateralOffsetMillimeters < 0
+                        ? new Color(0.18f, 0.82f, 0.98f)
+                        : new Color(0.36f, 0.92f, 0.57f);
             DrawPolyline(
                 points,
                 color,
@@ -360,7 +429,7 @@ public partial class WorldMapView : Control
         {
             var position = WorldToScreen(city.Position);
             var selected =
-                _controller.SelectedObjectId == city.SourceId;
+                _controller.IsSelected(city.SourceId);
             var radius = selected ? 9f : city.Tier switch
             {
                 CityTier.Mega => 7f,
@@ -403,7 +472,7 @@ public partial class WorldMapView : Control
         {
             var position = WorldToScreen(station.Position);
             var selected =
-                _controller.SelectedObjectId == station.SourceId;
+                _controller.IsSelected(station.SourceId);
             DrawCircle(
                 position,
                 selected ? 6f : 3.5f,
@@ -431,10 +500,14 @@ public partial class WorldMapView : Control
     {
         foreach (var connection in frame.Connections)
         {
+            var selected =
+                _controller.IsSelected(connection.SourceId);
             DrawCircle(
                 WorldToScreen(connection.Position),
-                7f,
-                new Color(0.96f, 0.28f, 0.6f, 0.32f),
+                selected ? 10f : 7f,
+                selected
+                    ? new Color(1f, 0.2f, 0.1f, 0.85f)
+                    : new Color(0.96f, 0.28f, 0.6f, 0.32f),
                 false,
                 2f,
                 true);
@@ -446,7 +519,7 @@ public partial class WorldMapView : Control
         foreach (var node in frame.Nodes)
         {
             var selected =
-                _controller.SelectedObjectId == node.SourceId;
+                _controller.IsSelected(node.SourceId);
             DrawCircle(
                 WorldToScreen(node.Position),
                 selected
@@ -497,12 +570,63 @@ public partial class WorldMapView : Control
         {
             DrawCircle(
                 WorldToScreen(waypoints[index].Position),
-                5f,
-                new Color(1f, 0.52f, 0.18f),
+                index == _selectedWaypoint ? 7f : 5f,
+                index == _selectedWaypoint
+                    ? new Color(1f, 0.22f, 0.1f)
+                    : new Color(1f, 0.52f, 0.18f),
                 true,
                 -1,
                 true);
         }
+    }
+
+    private void DrawSelectionBox()
+    {
+        if (!_boxSelecting)
+        {
+            return;
+        }
+
+        var position = new Vector2(
+            Math.Min(_boxStart.X, _boxEnd.X),
+            Math.Min(_boxStart.Y, _boxEnd.Y));
+        var size = new Vector2(
+            Math.Abs(_boxEnd.X - _boxStart.X),
+            Math.Abs(_boxEnd.Y - _boxStart.Y));
+        DrawRect(
+            new Rect2(position, size),
+            new Color(0.2f, 0.72f, 1f, 0.18f),
+            true);
+        DrawRect(
+            new Rect2(position, size),
+            new Color(0.3f, 0.82f, 1f, 0.95f),
+            false,
+            2f);
+    }
+
+    private void SelectBoxContents()
+    {
+        var first = ScreenToWorld(_boxStart);
+        var second = ScreenToWorld(_boxEnd);
+        var minimum = new WorldPoint(
+            Math.Min(first.XMillimeters, second.XMillimeters),
+            Math.Min(first.YMillimeters, second.YMillimeters));
+        var maximum = new WorldPoint(
+            Math.Max(first.XMillimeters, second.XMillimeters),
+            Math.Max(first.YMillimeters, second.YMillimeters));
+        if (minimum.XMillimeters == maximum.XMillimeters)
+        {
+            maximum = maximum.OffsetMillimeters(1, 0);
+        }
+
+        if (minimum.YMillimeters == maximum.YMillimeters)
+        {
+            maximum = maximum.OffsetMillimeters(0, 1);
+        }
+
+        _controller.SelectInBounds(
+            new WorldBounds(minimum, maximum));
+        QueueRedraw();
     }
 
     private void DrawOverlay(WorldMapFrame frame)

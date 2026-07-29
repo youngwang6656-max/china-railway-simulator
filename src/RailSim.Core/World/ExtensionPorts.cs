@@ -18,6 +18,25 @@ public interface ITerrainGenerator
         ulong terrainSeed);
 }
 
+public sealed class TerrainSourceGeneratorAdapter : ITerrainGenerator
+{
+    private readonly ITerrainSource _source;
+
+    public TerrainSourceGeneratorAdapter(ITerrainSource source)
+    {
+        _source = source ??
+            throw new ArgumentNullException(nameof(source));
+    }
+
+    public HeightField GenerateTerrain(
+        WorldGenerationParameters parameters,
+        ulong terrainSeed)
+    {
+        _ = terrainSeed;
+        return _source.ReadTerrain(parameters);
+    }
+}
+
 public interface ITerrainEditService
 {
     HeightField Apply(

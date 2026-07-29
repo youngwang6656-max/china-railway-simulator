@@ -1,6 +1,8 @@
 using System.Collections.Immutable;
 using System.Text;
+using RailSim.Core.Editing;
 using RailSim.Core.Persistence;
+using RailSim.Core.Rail;
 using RailSim.Core.World;
 using Xunit;
 
@@ -73,6 +75,89 @@ public sealed class FileWorldChunkStoreTests : IDisposable
                 SearchOption.AllDirectories));
     }
 
+    [Fact]
+    public async Task StreamingPolicyUnloadReloadPreservesStablePayload()
+    {
+        var store = new FileWorldChunkStore(_temporaryDirectory);
+        var origin = Snapshot(
+            new WorldChunkId(0, 0),
+            "track:stable-across-unload");
+        var distant = Snapshot(
+            new WorldChunkId(93, 93),
+            "station:continental-mega");
+        await store.WriteAsync(origin);
+        await store.WriteAsync(distant);
+        var coordinator = new WorldStreamingCoordinator(
+            store,
+            new AdjacentChunkStreamingPolicy(prefetchRadius: 0),
+            chunkSizeMeters: 64_000);
+
+        await coordinator.UpdateAsync(BoundsInside(origin.Id));
+        Assert.Contains(origin.Id, coordinator.Loaded.Keys);
+        await coordinator.UpdateAsync(BoundsInside(distant.Id));
+        Assert.DoesNotContain(origin.Id, coordinator.Loaded.Keys);
+        Assert.Contains(distant.Id, coordinator.Loaded.Keys);
+        await coordinator.UpdateAsync(BoundsInside(origin.Id));
+
+        var reloaded = coordinator.Loaded[origin.Id];
+        Assert.Equal(origin.ContentHash, reloaded.ContentHash);
+        Assert.Equal(
+            "track:stable-across-unload",
+            Encoding.UTF8.GetString(reloaded.Payload.AsSpan()));
+    }
+
+    [Fact]
+    public async Task GeneratedWorldAndRailManifestRetainsStableIds()
+    {
+        var generated = new ProceduralWorldGenerator().Generate(
+            WorldGenerationParameters.CreateRegional(20260729));
+        var stations = generated.Stations.Values
+            .OrderBy(station => station.Position.XMillimeters)
+            .ThenBy(station => station.Id)
+            .Take(2)
+            .ToArray();
+        var patch = new DoubleTrackCorridorStrategy(
+            new DeterministicStableIdSource("chunk-manifest"))
+            .CreatePatch(
+                RailTopology.Empty,
+                new ControlPointSplineStrategy().Build(
+                [
+                    new DraftWaypoint(
+                        stations[0].Position,
+                        stations[0].Id),
+                    new DraftWaypoint(
+                        stations[1].Position,
+                        stations[1].Id)
+                ]),
+                TrackPlacementOptions.HighSpeedDoubleTrack);
+        var world = new WorldState(
+            1,
+            generated,
+            patch.ApplyTo(RailTopology.Empty));
+        var chunkId = patch.AffectedChunks[
+            patch.AffectedChunks.Length / 2];
+        var codec = new WorldChunkSnapshotCodec();
+        var snapshot = codec.Encode(world, chunkId);
+        var store = new FileWorldChunkStore(_temporaryDirectory);
+        await store.WriteAsync(snapshot);
+        var coordinator = new WorldStreamingCoordinator(
+            store,
+            new AdjacentChunkStreamingPolicy(prefetchRadius: 0),
+            generated.Parameters.ChunkSizeMeters);
+
+        await coordinator.UpdateAsync(BoundsInside(chunkId));
+        var manifest = codec.Decode(coordinator.Loaded[chunkId]);
+
+        Assert.Equal(chunkId, manifest.Id);
+        Assert.NotEmpty(manifest.TrackIds);
+        Assert.All(
+            manifest.TrackIds,
+            id => Assert.Contains(id, world.RailTopology.Tracks.Keys));
+        Assert.All(
+            manifest.RailNodeIds,
+            id => Assert.Contains(id, world.RailTopology.Nodes.Keys));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_temporaryDirectory))
@@ -90,5 +175,16 @@ public sealed class FileWorldChunkStoreTests : IDisposable
             schemaVersion: 1,
             $"hash:{payload}",
             Encoding.UTF8.GetBytes(payload).ToImmutableArray());
+    }
+
+    private static WorldBounds BoundsInside(WorldChunkId id)
+    {
+        const long chunkSizeMillimeters = 64_000_000;
+        var minimum = new WorldPoint(
+            checked((id.X * chunkSizeMillimeters) + 1),
+            checked((id.Y * chunkSizeMillimeters) + 1));
+        return new WorldBounds(
+            minimum,
+            minimum.OffsetMillimeters(10_000, 10_000));
     }
 }

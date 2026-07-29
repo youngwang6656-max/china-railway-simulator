@@ -213,6 +213,73 @@ public sealed class WorldMapProjectionTests
             id => Assert.StartsWith("near:", id.Value));
     }
 
+    [Fact]
+    public void IncrementalRailIndexUpdateMatchesAFullRebuild()
+    {
+        var world = CreateWorldWithMainLine();
+        var target = world.RailTopology.Tracks.Values
+            .OrderBy(track => track.Id)
+            .First();
+        var alignment = world.RailTopology.Alignments[target.AlignmentId];
+        var splitPoint = alignment.ControlPoints[
+            alignment.ControlPoints.Length / 2];
+        var patch = new RailTopologyEditStrategy(
+            new DeterministicStableIdSource("indexed-split"))
+            .CreateSplitPatch(
+                world.RailTopology,
+                target.Id,
+                splitPoint,
+                world.BaseWorld.Parameters.ChunkSizeMeters);
+        var candidate = patch.ApplyTo(world.RailTopology);
+        var change = patch.ToChangeSet(
+            world.Revision,
+            world.Revision + 1);
+        var incremental = RailSpatialIndex
+            .Build(
+                world.RailTopology,
+                world.BaseWorld.Parameters.ChunkSizeMeters)
+            .Update(candidate, change)
+            .Query(
+                world.BaseWorld.Parameters.Bounds,
+                new GridWorldRegionProvider());
+        var rebuilt = RailSpatialIndex
+            .Build(
+                candidate,
+                world.BaseWorld.Parameters.ChunkSizeMeters)
+            .Query(
+                world.BaseWorld.Parameters.Bounds,
+                new GridWorldRegionProvider());
+
+        Assert.True(incremental.NodeIds.SetEquals(rebuilt.NodeIds));
+        Assert.True(incremental.PortIds.SetEquals(rebuilt.PortIds));
+        Assert.True(incremental.TrackIds.SetEquals(rebuilt.TrackIds));
+        Assert.True(
+            incremental.TrackGroupIds.SetEquals(
+                rebuilt.TrackGroupIds));
+        Assert.True(
+            incremental.ConnectionIds.SetEquals(
+                rebuilt.ConnectionIds));
+    }
+
+    [Fact]
+    public void ReplacementMacroProjectionIsConsumed()
+    {
+        var world = CreateWorldWithMainLine();
+        var replacement = new RecordingMacroProjection();
+        var projection = new WorldMapProjection(
+            new DefaultMapLodPolicy(),
+            new GridWorldRegionProvider(),
+            replacement);
+
+        var frame = projection.Project(
+            world,
+            MapViewport.Regional(world.BaseWorld.Parameters.Bounds));
+
+        Assert.Equal(1, replacement.CallCount);
+        var track = Assert.Single(frame.Tracks);
+        Assert.Equal(new StableId("macro:replacement"), track.SourceId);
+    }
+
     private static WorldState CreateWorldWithMainLine()
     {
         var generated = new ProceduralWorldGenerator().Generate(
@@ -256,6 +323,31 @@ public sealed class WorldMapProjectionTests
             return new GridWorldRegionProvider().EnumerateChunks(
                 bounds,
                 chunkSizeMeters);
+        }
+    }
+
+    private sealed class RecordingMacroProjection :
+        IMacroTopologyProjection
+    {
+        public int CallCount { get; private set; }
+
+        public ImmutableArray<ProjectedTrack> Project(
+            RailTopology topology,
+            WorldBounds viewportBounds,
+            MapLod lod)
+        {
+            CallCount++;
+            return
+            [
+                new ProjectedTrack(
+                    new StableId("macro:replacement"),
+                    [viewportBounds.Minimum, viewportBounds.Maximum],
+                    null,
+                    null,
+                    0,
+                    160,
+                    true)
+            ];
         }
     }
 }

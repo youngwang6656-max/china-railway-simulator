@@ -22,6 +22,7 @@ public partial class Bootstrap : Control
     private bool _smokeReplacementOk;
     private bool _smokeManualWarningOk;
     private bool _smokeManualConnectorOk;
+    private bool _smokeEditToolsOk;
     private long _smokeStartTick;
     private int _smokeFrames;
     private SimulationRate _rate =
@@ -48,6 +49,7 @@ public partial class Bootstrap : Control
             Array.Empty<ISimulationSystem>(),
             store,
             [_editor]);
+        _editor.AttachHost(_host);
 
         if (smokeTest)
         {
@@ -67,7 +69,6 @@ public partial class Bootstrap : Control
                 mainLineRebuild == CommandStatus.Accepted &&
                 secondLineRebuild == CommandStatus.Accepted &&
                 connectorRebuild == CommandStatus.Accepted;
-            _editor.AttachHost(_host);
             var hostUndo = _editor.Undo();
             var hostRedo = _editor.Redo();
             _smokeHostCommandOk =
@@ -89,7 +90,10 @@ public partial class Bootstrap : Control
             _smokeReplacementOk =
                 newWorldDisplayOk &&
                 ReferenceEquals(_editor.DisplayWorld, _editor.World);
-            (_smokeManualWarningOk, _smokeManualConnectorOk) =
+            (
+                _smokeManualWarningOk,
+                _smokeManualConnectorOk,
+                _smokeEditToolsOk) =
                 RunManualToolSmoke();
             BuildWorkspace();
             UpdateStatus();
@@ -100,7 +104,6 @@ public partial class Bootstrap : Control
         _editor.BuildDemoMainLine();
         _editor.BuildDemoSecondLine();
         _editor.BuildDemoConnector();
-        _editor.AttachHost(_host);
         BuildWorkspace();
         UpdateStatus();
     }
@@ -148,6 +151,7 @@ public partial class Bootstrap : Control
             _smokeReplacementOk &&
             _smokeManualWarningOk &&
             _smokeManualConnectorOk &&
+            _smokeEditToolsOk &&
             snapshotOk;
         GD.Print(
             $"RAILSIM_WORLD_SMOKE cities={world.BaseWorld.Cities.Count} " +
@@ -160,10 +164,12 @@ public partial class Bootstrap : Control
         GD.Print($"RAILSIM_REPLACEMENT_SMOKE current={_smokeReplacementOk}");
         GD.Print($"RAILSIM_MANUAL_WARNING_SMOKE confirmed={_smokeManualWarningOk}");
         GD.Print($"RAILSIM_MANUAL_CONNECTOR_SMOKE built={_smokeManualConnectorOk}");
+        GD.Print($"RAILSIM_EDIT_TOOLS_SMOKE complete={_smokeEditToolsOk}");
         GetTree().Quit(success ? 0 : 1);
     }
 
-    private static (bool Warning, bool Connector) RunManualToolSmoke()
+    private static (bool Warning, bool Connector, bool EditTools)
+        RunManualToolSmoke()
     {
         var editor = WorldEditorController.CreateDefault(
             20260729,
@@ -199,7 +205,7 @@ public partial class Bootstrap : Control
             .ToArray();
         if (connectorNodes.Length < 2)
         {
-            return (warningOk, false);
+            return (warningOk, false, false);
         }
 
         editor.SetTool(WorldEditorTool.DrawConnector);
@@ -219,7 +225,67 @@ public partial class Bootstrap : Control
             editor.World.RailTopology.Tracks.Count == tracksBefore + 2 &&
             editor.World.RailTopology.Connections.Count >=
             connectionsBefore + 4;
-        return (warningOk, connectorOk);
+
+        editor.SetTool(WorldEditorTool.DrawDoubleTrack);
+        editor.AddWaypoint(
+            new WorldPoint(200_000_000, 200_000_000),
+            snapRadiusMeters: 1);
+        editor.AddWaypoint(
+            new WorldPoint(210_000_000, 200_000_000),
+            snapRadiusMeters: 1);
+        editor.AddWaypoint(
+            new WorldPoint(220_000_000, 200_000_000),
+            snapRadiusMeters: 1);
+        editor.RemoveWaypoint(1);
+        var controlPointDeleteOk = editor.DraftWaypoints.Length == 2;
+        editor.CancelDraft();
+
+        var splitTarget = editor.World.RailTopology.Tracks.Values
+            .OrderBy(track => track.Id)
+            .First();
+        var splitAlignment = editor.World.RailTopology.Alignments[
+            splitTarget.AlignmentId];
+        var splitPoint = splitAlignment.ControlPoints[
+            splitAlignment.ControlPoints.Length / 2];
+        var tracksBeforeSplit = editor.World.RailTopology.Tracks.Count;
+        editor.SetTool(WorldEditorTool.SplitTrack);
+        var splitOk =
+            editor.SplitTrackAt(splitPoint, radiusMeters: 1) ==
+            CommandStatus.Accepted &&
+            editor.World.RailTopology.Tracks.Count ==
+            tracksBeforeSplit + 2;
+        var tracksBeforeDelete = editor.World.RailTopology.Tracks.Count;
+        var deleteOk =
+            editor.DeleteSelection() == CommandStatus.Accepted &&
+            editor.World.RailTopology.Tracks.Count < tracksBeforeDelete &&
+            editor.Undo() == CommandStatus.Accepted &&
+            editor.World.RailTopology.Tracks.Count == tracksBeforeDelete;
+
+        var connectedNode = editor.World.RailTopology.Nodes.Values
+            .First(
+                node =>
+                    editor.World.RailTopology.Connections.Values.Any(
+                        connection =>
+                            connection.NodeId == node.Id));
+        var selectionBounds = new WorldBounds(
+            connectedNode.Position.OffsetMillimeters(-1, -1),
+            connectedNode.Position.OffsetMillimeters(1, 1));
+        editor.SelectInBounds(selectionBounds);
+        var boxSelectOk = editor.SelectedObjectIds.Count > 0;
+        var connectionsBeforeDisconnect =
+            editor.World.RailTopology.Connections.Count;
+        var disconnectOk =
+            editor.DisconnectSelection() == CommandStatus.Accepted &&
+            editor.World.RailTopology.Connections.Count <
+            connectionsBeforeDisconnect;
+        return (
+            warningOk,
+            connectorOk,
+            controlPointDeleteOk &&
+            splitOk &&
+            deleteOk &&
+            boxSelectOk &&
+            disconnectOk);
     }
 
     private void BuildWorkspace()
@@ -235,10 +301,10 @@ public partial class Bootstrap : Control
 
         var toolbarPanel = new PanelContainer
         {
-            CustomMinimumSize = new Vector2(0, 52)
+            CustomMinimumSize = new Vector2(0, 96)
         };
         layout.AddChild(toolbarPanel);
-        var toolbar = new HBoxContainer();
+        var toolbar = new HFlowContainer();
         toolbar.AddThemeConstantOverride("separation", 6);
         toolbarPanel.AddChild(toolbar);
 
@@ -260,6 +326,26 @@ public partial class Bootstrap : Control
             () => _editor.SetTool(WorldEditorTool.DrawConnector));
         AddButton(
             toolbar,
+            "框选",
+            () => _editor.SetTool(WorldEditorTool.BoxSelect));
+        AddButton(
+            toolbar,
+            "拆分轨道",
+            () => _editor.SetTool(WorldEditorTool.SplitTrack));
+        AddButton(
+            toolbar,
+            "删除所选",
+            () => _editor.DeleteSelection());
+        AddButton(
+            toolbar,
+            "断开互通",
+            () => _editor.DisconnectSelection());
+        AddButton(
+            toolbar,
+            "删控制点",
+            () => _editor.RemoveLastWaypoint());
+        AddButton(
+            toolbar,
             "切换互通方案",
             () => _editor.CycleConnectorMovementPlan());
         AddButton(toolbar, "示例干线", () => _editor.BuildDemoMainLine());
@@ -276,7 +362,7 @@ public partial class Bootstrap : Control
 
         var hint = new Label
         {
-            Text = "滚轮缩放｜中/右键拖动｜绘线时左键布点、拖点调整、Enter 提交、Esc 取消",
+            Text = "滚轮缩放｜中/右键平移｜Delete 删除点/所选｜拆分后可接联络线",
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             VerticalAlignment = VerticalAlignment.Center
         };

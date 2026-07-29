@@ -128,6 +128,120 @@ public sealed class RailSpatialIndex
             connections.ToImmutable());
     }
 
+    public RailSpatialIndex Update(
+        RailTopology topology,
+        RailTopologyChangeSet change)
+    {
+        ArgumentNullException.ThrowIfNull(topology);
+        ArgumentNullException.ThrowIfNull(change);
+        var chunks = _chunks.ToBuilder();
+        foreach (var chunkId in change.AffectedChunks.Distinct())
+        {
+            var existing = chunks.TryGetValue(chunkId, out var current)
+                ? current
+                : EmptyChunk;
+            var nodeIds = existing.NodeIds
+                .Except(change.RemovedNodeIds)
+                .ToImmutableHashSet()
+                .ToBuilder();
+            var portIds = existing.PortIds
+                .Except(change.RemovedPortIds)
+                .ToImmutableHashSet()
+                .ToBuilder();
+            var trackIds = existing.TrackIds
+                .Except(change.RemovedTrackIds)
+                .ToImmutableHashSet()
+                .ToBuilder();
+            var connectionIds = existing.ConnectionIds
+                .Except(change.RemovedConnectionIds)
+                .ToImmutableHashSet()
+                .ToBuilder();
+
+            foreach (var id in change.AddedNodeIds)
+            {
+                if (topology.Nodes.TryGetValue(id, out var node) &&
+                    WorldChunkId.FromPoint(
+                        node.Position,
+                        ChunkSizeMeters) == chunkId)
+                {
+                    nodeIds.Add(id);
+                }
+            }
+
+            foreach (var id in change.AddedPortIds)
+            {
+                if (topology.Ports.TryGetValue(id, out var port) &&
+                    WorldChunkId.FromPoint(
+                        topology.Nodes[port.NodeId].Position,
+                        ChunkSizeMeters) == chunkId)
+                {
+                    portIds.Add(id);
+                }
+            }
+
+            foreach (var id in change.AddedTrackIds)
+            {
+                if (!topology.Tracks.TryGetValue(id, out var track))
+                {
+                    continue;
+                }
+
+                var alignment = topology.Alignments[track.AlignmentId];
+                if (WorldChunkCoverage.TracePolyline(
+                        alignment.ControlPoints,
+                        ChunkSizeMeters,
+                        Math.Abs(
+                            (long)track.LateralOffsetMillimeters))
+                    .Contains(chunkId))
+                {
+                    trackIds.Add(id);
+                }
+            }
+
+            foreach (var id in change.AddedConnectionIds)
+            {
+                if (topology.Connections.TryGetValue(
+                        id,
+                        out var connection) &&
+                    WorldChunkId.FromPoint(
+                        topology.Nodes[connection.NodeId].Position,
+                        ChunkSizeMeters) == chunkId)
+                {
+                    connectionIds.Add(id);
+                }
+            }
+
+            var frozenTrackIds = trackIds.ToImmutable();
+            var groupIds = topology.TrackGroups.Values
+                .Where(group => group.TrackIds.Any(frozenTrackIds.Contains))
+                .Select(group => group.Id)
+                .ToImmutableHashSet();
+            var updated = new ChunkContents(
+                nodeIds.ToImmutable(),
+                portIds.ToImmutable(),
+                frozenTrackIds,
+                groupIds,
+                connectionIds.ToImmutable());
+            if (updated == EmptyChunk ||
+                (updated.NodeIds.IsEmpty &&
+                 updated.PortIds.IsEmpty &&
+                 updated.TrackIds.IsEmpty &&
+                 updated.TrackGroupIds.IsEmpty &&
+                 updated.ConnectionIds.IsEmpty))
+            {
+                chunks.Remove(chunkId);
+            }
+            else
+            {
+                chunks[chunkId] = updated;
+            }
+        }
+
+        return new RailSpatialIndex(
+            ChunkSizeMeters,
+            chunks.ToImmutable());
+    }
+
     private static MutableChunkContents GetOrCreate(
         IDictionary<WorldChunkId, MutableChunkContents> chunks,
         WorldChunkId id)
@@ -147,6 +261,13 @@ public sealed class RailSpatialIndex
         ImmutableHashSet<StableId> TrackIds,
         ImmutableHashSet<StableId> TrackGroupIds,
         ImmutableHashSet<StableId> ConnectionIds);
+
+    private static ChunkContents EmptyChunk { get; } = new(
+        ImmutableHashSet<StableId>.Empty,
+        ImmutableHashSet<StableId>.Empty,
+        ImmutableHashSet<StableId>.Empty,
+        ImmutableHashSet<StableId>.Empty,
+        ImmutableHashSet<StableId>.Empty);
 
     private sealed class MutableChunkContents
     {

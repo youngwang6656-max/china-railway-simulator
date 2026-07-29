@@ -51,6 +51,17 @@ public sealed class ProceduralWorldGenerator :
             throw new ArgumentNullException(nameof(nameGenerator));
     }
 
+    public ProceduralWorldGenerator(
+        ITerrainSource terrainSource,
+        ICityPlacementStrategy cityPlacement,
+        INameGenerator nameGenerator)
+        : this(
+            new TerrainSourceGeneratorAdapter(terrainSource),
+            cityPlacement,
+            nameGenerator)
+    {
+    }
+
     public GeneratedWorld Generate(WorldGenerationParameters parameters)
     {
         ArgumentNullException.ThrowIfNull(parameters);

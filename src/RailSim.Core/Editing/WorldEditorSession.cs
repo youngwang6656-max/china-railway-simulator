@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using RailSim.Core.Commands;
 using RailSim.Core.Query;
 using RailSim.Core.World;
@@ -10,17 +11,25 @@ public sealed class WorldEditorSession : ISnapshotContributor
     private readonly IRailEditValidator _validator;
     private readonly Stack<RailGraphPatch> _undo = new();
     private readonly Stack<RailGraphPatch> _redo = new();
+    private readonly IEditHistoryStore? _historyStore;
+    private readonly StableId _worldId;
     private WorldState _world;
 
     public WorldEditorSession(
         WorldState initialWorld,
-        IRailEditValidator validator)
+        IRailEditValidator validator,
+        IEditHistoryStore? historyStore = null,
+        StableId? worldId = null)
     {
         _world = initialWorld ??
             throw new ArgumentNullException(nameof(initialWorld));
         WorldStateValidator.Validate(_world);
         _validator = validator ??
             throw new ArgumentNullException(nameof(validator));
+        _historyStore = historyStore;
+        _worldId = worldId ??
+            new StableId($"world:{_world.BaseWorld.Parameters.Seed}");
+        RestoreHistory();
     }
 
     public string Key => "world";
@@ -101,12 +110,15 @@ public sealed class WorldEditorSession : ISnapshotContributor
             }
 
             var candidate = patch.ApplyTo(_world.RailTopology);
+            var resultRevision = checked(_world.Revision + 1);
             _world = new WorldState(
-                checked(_world.Revision + 1),
+                resultRevision,
                 _world.BaseWorld,
-                candidate);
+                candidate,
+                patch.ToChangeSet(_world.Revision, resultRevision));
             _undo.Push(patch.Invert());
             _redo.Clear();
+            PersistHistory();
             return CommandDecision.Accept();
         }
     }
@@ -130,11 +142,14 @@ public sealed class WorldEditorSession : ISnapshotContributor
 
             var patch = _undo.Pop();
             var candidate = patch.ApplyTo(_world.RailTopology);
+            var resultRevision = checked(_world.Revision + 1);
             _world = new WorldState(
-                checked(_world.Revision + 1),
+                resultRevision,
                 _world.BaseWorld,
-                candidate);
+                candidate,
+                patch.ToChangeSet(_world.Revision, resultRevision));
             _redo.Push(patch.Invert());
+            PersistHistory();
             return CommandDecision.Accept();
         }
     }
@@ -158,11 +173,14 @@ public sealed class WorldEditorSession : ISnapshotContributor
 
             var patch = _redo.Pop();
             var candidate = patch.ApplyTo(_world.RailTopology);
+            var resultRevision = checked(_world.Revision + 1);
             _world = new WorldState(
-                checked(_world.Revision + 1),
+                resultRevision,
                 _world.BaseWorld,
-                candidate);
+                candidate,
+                patch.ToChangeSet(_world.Revision, resultRevision));
             _undo.Push(patch.Invert());
+            PersistHistory();
             return CommandDecision.Accept();
         }
     }
@@ -179,5 +197,37 @@ public sealed class WorldEditorSession : ISnapshotContributor
             : CommandDecision.Reject(
                 "world.edit.stale_revision",
                 $"Expected world revision {_world.Revision}, received {baseRevision}.");
+    }
+
+    private void RestoreHistory()
+    {
+        var history = _historyStore?.Load(_worldId);
+        if (history is null ||
+            history.SchemaVersion != 1 ||
+            history.WorldRevision != _world.Revision)
+        {
+            return;
+        }
+
+        foreach (var patch in history.Undo)
+        {
+            _undo.Push(patch);
+        }
+
+        foreach (var patch in history.Redo)
+        {
+            _redo.Push(patch);
+        }
+    }
+
+    private void PersistHistory()
+    {
+        _historyStore?.Save(
+            _worldId,
+            new EditHistorySnapshot(
+                schemaVersion: 1,
+                _world.Revision,
+                _undo.Reverse().ToImmutableArray(),
+                _redo.Reverse().ToImmutableArray()));
     }
 }

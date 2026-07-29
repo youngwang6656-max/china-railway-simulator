@@ -190,6 +190,32 @@ public sealed record RailGraphPatch
         };
     }
 
+    public RailTopologyChangeSet ToChangeSet(
+        long baseRevision,
+        long resultRevision)
+    {
+        if (baseRevision < 0 ||
+            resultRevision != checked(baseRevision + 1))
+        {
+            throw new ArgumentOutOfRangeException(nameof(resultRevision));
+        }
+
+        return new RailTopologyChangeSet(
+            baseRevision,
+            resultRevision,
+            AffectedChunks,
+            RemovedNodes.Select(item => item.Id).ToImmutableHashSet(),
+            RemovedPorts.Select(item => item.Id).ToImmutableHashSet(),
+            RemovedTracks.Select(item => item.Id).ToImmutableHashSet(),
+            RemovedTrackGroups.Select(item => item.Id).ToImmutableHashSet(),
+            RemovedConnections.Select(item => item.Id).ToImmutableHashSet(),
+            AddedNodes.Select(item => item.Id).ToImmutableHashSet(),
+            AddedPorts.Select(item => item.Id).ToImmutableHashSet(),
+            AddedTracks.Select(item => item.Id).ToImmutableHashSet(),
+            AddedTrackGroups.Select(item => item.Id).ToImmutableHashSet(),
+            AddedConnections.Select(item => item.Id).ToImmutableHashSet());
+    }
+
     private static RailEditIntent CombineIntent(
         RailEditIntent first,
         RailEditIntent second)

@@ -85,6 +85,9 @@ public sealed class DoubleTrackCorridorStrategy : ITrackPlacementStrategy
                 nameof(draft));
         }
 
+        var boundarySampleIndices = FindBoundarySampleIndices(
+            draft,
+            boundaryIndices);
         var addedNodes = ImmutableArray.CreateBuilder<RailNode>();
         var addedPorts = ImmutableArray.CreateBuilder<RailPort>();
         var addedAlignments = ImmutableArray.CreateBuilder<Alignment>();
@@ -135,11 +138,10 @@ public sealed class DoubleTrackCorridorStrategy : ITrackPlacementStrategy
         var halfSpacing = options.TrackSpacingMillimeters / 2;
         for (var segment = 0; segment < boundaryIndices.Length - 1; segment++)
         {
-            var startIndex = boundaryIndices[segment];
-            var endIndex = boundaryIndices[segment + 1];
-            var controlPoints = draft.Waypoints[startIndex..(endIndex + 1)]
-                .Select(waypoint => waypoint.Position)
-                .ToImmutableArray();
+            var startSampleIndex = boundarySampleIndices[segment];
+            var endSampleIndex = boundarySampleIndices[segment + 1];
+            var controlPoints =
+                draft.SampledPoints[startSampleIndex..(endSampleIndex + 1)];
             var alignment = new Alignment(
                 _ids.Next("alignment"),
                 controlPoints,
@@ -239,6 +241,43 @@ public sealed class DoubleTrackCorridorStrategy : ITrackPlacementStrategy
 
         values.Add(waypoints.Length - 1);
         return values.ToImmutable();
+    }
+
+    private static ImmutableArray<int> FindBoundarySampleIndices(
+        AlignmentDraft draft,
+        ImmutableArray<int> boundaryIndices)
+    {
+        var result = ImmutableArray.CreateBuilder<int>(
+            boundaryIndices.Length);
+        var searchStart = 0;
+        foreach (var waypointIndex in boundaryIndices)
+        {
+            var position = draft.Waypoints[waypointIndex].Position;
+            var found = -1;
+            for (var sampleIndex = searchStart;
+                 sampleIndex < draft.SampledPoints.Length;
+                 sampleIndex++)
+            {
+                if (draft.SampledPoints[sampleIndex] == position)
+                {
+                    found = sampleIndex;
+                    break;
+                }
+            }
+
+            if (found < 0)
+            {
+                throw new ArgumentException(
+                    "Sampled alignment geometry must pass through every " +
+                    "topology boundary waypoint.",
+                    nameof(draft));
+            }
+
+            result.Add(found);
+            searchStart = found + 1;
+        }
+
+        return result.MoveToImmutable();
     }
 
     private static long CalculateLength(

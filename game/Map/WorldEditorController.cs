@@ -14,8 +14,10 @@ namespace RailSim.App.Map;
 public enum WorldEditorTool
 {
     Inspect,
+    BoxSelect,
     DrawDoubleTrack,
-    DrawConnector
+    DrawConnector,
+    SplitTrack
 }
 
 public sealed class WorldEditorController : ISnapshotContributor
@@ -37,6 +39,8 @@ public sealed class WorldEditorController : ISnapshotContributor
     private StableId? _secondLineJunctionStationId;
     private string? _pendingWarningFingerprint;
     private int _connectorMovementPlan;
+    private ImmutableHashSet<StableId> _selectedObjectIds =
+        ImmutableHashSet<StableId>.Empty;
 
     private WorldEditorController(
         IWorldGenerator generator,
@@ -89,6 +93,9 @@ public sealed class WorldEditorController : ISnapshotContributor
     public string LastMessage { get; private set; } = "世界已生成";
 
     public StableId? SelectedObjectId { get; private set; }
+
+    public ImmutableHashSet<StableId> SelectedObjectIds =>
+        _selectedObjectIds;
 
     public ImmutableArray<DraftWaypoint> DraftWaypoints =>
         _draftWaypoints.ToImmutableArray();
@@ -155,6 +162,7 @@ public sealed class WorldEditorController : ISnapshotContributor
         _secondLineJunctionStationId = null;
         CurrentTool = WorldEditorTool.Inspect;
         SelectedObjectId = null;
+        _selectedObjectIds = ImmutableHashSet<StableId>.Empty;
         LastMessage = $"新世界 {seed} 已生成";
         Changed?.Invoke();
     }
@@ -169,11 +177,18 @@ public sealed class WorldEditorController : ISnapshotContributor
         }
 
         CurrentTool = tool;
-        LastMessage = tool == WorldEditorTool.DrawDoubleTrack
-            ? "双线工具：左键布点，Enter 或双击提交，Esc 取消"
-            : tool == WorldEditorTool.DrawConnector
-                ? "联络线工具：依次选择两个既有节点，Enter 或双击提交"
-                : "查看工具";
+        LastMessage = tool switch
+        {
+            WorldEditorTool.DrawDoubleTrack =>
+                "双线工具：左键布点，Enter 或双击提交，Esc 取消",
+            WorldEditorTool.DrawConnector =>
+                "联络线工具：依次选择两个既有节点，Enter 或双击提交",
+            WorldEditorTool.BoxSelect =>
+                "框选工具：按住左键拖出选择框",
+            WorldEditorTool.SplitTrack =>
+                "拆分工具：点击既有双线中的目标位置",
+            _ => "查看工具"
+        };
         Changed?.Invoke();
     }
 
@@ -201,18 +216,53 @@ public sealed class WorldEditorController : ISnapshotContributor
                         Kind: "城市",
                         city.Position,
                         Distance: city.Position.DistanceMetersTo(point))))
+            .Concat(
+                World.RailTopology.Tracks.Values.Select(
+                    track =>
+                    {
+                        var alignment = World.RailTopology.Alignments[
+                            track.AlignmentId];
+                        return (
+                            Id: SelectableIdForTrack(track.Id),
+                            Kind: "轨道组",
+                            Position: alignment.ControlPoints[
+                                alignment.ControlPoints.Length / 2],
+                            Distance: DistanceToPolylineMeters(
+                                point,
+                                alignment.ControlPoints));
+                    }))
+            .Concat(
+                World.RailTopology.Connections.Values.Select(
+                    connection =>
+                    {
+                        var position = World.RailTopology.Nodes[
+                            connection.NodeId].Position;
+                        return (
+                            connection.Id,
+                            Kind: "互通连接",
+                            Position: position,
+                            Distance: position.DistanceMetersTo(point));
+                    }))
             .Where(candidate => candidate.Distance <= radiusMeters)
+            .GroupBy(candidate => candidate.Id)
+            .Select(
+                group => group
+                    .OrderBy(candidate => candidate.Distance)
+                    .First())
             .OrderBy(candidate => candidate.Distance)
             .ThenBy(candidate => candidate.Id)
             .FirstOrDefault();
         if (candidates.Id == default)
         {
             SelectedObjectId = null;
+            _selectedObjectIds = ImmutableHashSet<StableId>.Empty;
             LastMessage = "当前位置没有可检查对象";
         }
         else
         {
             SelectedObjectId = candidates.Id;
+            _selectedObjectIds =
+                ImmutableHashSet.Create(candidates.Id);
             LastMessage = $"已选择{candidates.Kind} {candidates.Id}";
         }
 
@@ -250,6 +300,204 @@ public sealed class WorldEditorController : ISnapshotContributor
         _connectorMovementPlan = 0;
         LastMessage = "控制点已调整";
         Changed?.Invoke();
+    }
+
+    public void RemoveWaypoint(int index)
+    {
+        if (index < 0 || index >= _draftWaypoints.Count)
+        {
+            throw new ArgumentOutOfRangeException(nameof(index));
+        }
+
+        _draftWaypoints.RemoveAt(index);
+        _pendingWarningFingerprint = null;
+        _connectorMovementPlan = 0;
+        LastMessage = "控制点已删除";
+        Changed?.Invoke();
+    }
+
+    public void RemoveLastWaypoint()
+    {
+        if (_draftWaypoints.Count == 0)
+        {
+            LastMessage = "当前没有可删除的控制点";
+            Changed?.Invoke();
+            return;
+        }
+
+        RemoveWaypoint(_draftWaypoints.Count - 1);
+    }
+
+    public void SelectInBounds(WorldBounds bounds)
+    {
+        var selected = ImmutableHashSet.CreateBuilder<StableId>();
+        selected.UnionWith(
+            World.BaseWorld.Cities.Values
+                .Where(city => bounds.Contains(city.Position))
+                .Select(city => city.Id));
+        selected.UnionWith(
+            World.BaseWorld.Stations.Values
+                .Where(station => bounds.Contains(station.Position))
+                .Select(station => station.Id));
+        selected.UnionWith(
+            World.RailTopology.Nodes.Values
+                .Where(node => bounds.Contains(node.Position))
+                .Select(node => node.Id));
+        selected.UnionWith(
+            World.RailTopology.Connections.Values
+                .Where(
+                    connection =>
+                        bounds.Contains(
+                            World.RailTopology.Nodes[
+                                connection.NodeId].Position))
+                .Select(connection => connection.Id));
+        foreach (var track in World.RailTopology.Tracks.Values)
+        {
+            if (Intersects(
+                    bounds,
+                    World.RailTopology.Alignments[
+                        track.AlignmentId].ControlPoints))
+            {
+                selected.Add(SelectableIdForTrack(track.Id));
+            }
+        }
+
+        _selectedObjectIds = selected.ToImmutable();
+        SelectedObjectId = _selectedObjectIds
+            .OrderBy(id => id)
+            .Select(id => (StableId?)id)
+            .FirstOrDefault();
+        LastMessage = $"框选 {_selectedObjectIds.Count} 个对象";
+        Changed?.Invoke();
+    }
+
+    public bool IsSelected(StableId id)
+    {
+        if (_selectedObjectIds.Contains(id))
+        {
+            return true;
+        }
+
+        return World.RailTopology.Tracks.ContainsKey(id) &&
+            World.RailTopology.TrackGroups.Values.Any(
+                group =>
+                    _selectedObjectIds.Contains(group.Id) &&
+                    group.TrackIds.Contains(id));
+    }
+
+    public CommandStatus DeleteSelection()
+    {
+        var patch = new RailTopologyEditStrategy(
+            NewIdSource("delete"))
+            .CreateDeletePatch(
+                World.RailTopology,
+                _selectedObjectIds,
+                World.BaseWorld.Parameters.ChunkSizeMeters);
+        if (patch.IsEmpty)
+        {
+            LastMessage = "请选择轨道、轨道组或铁路节点后再删除";
+            Changed?.Invoke();
+            return CommandStatus.Rejected;
+        }
+
+        var result = Submit(
+            new ApplyRailEditCommand(patch, World.Revision));
+        if (result.Status == CommandStatus.Accepted)
+        {
+            ClearSelection();
+            SynchronizeDemoReferencesFromTopology();
+            LastMessage = "所选铁路对象已原子删除，可撤销恢复";
+            Changed?.Invoke();
+        }
+
+        return result.Status;
+    }
+
+    public CommandStatus DisconnectSelection()
+    {
+        var patch = new RailTopologyEditStrategy(
+            NewIdSource("disconnect"))
+            .CreateDisconnectPatch(
+                World.RailTopology,
+                _selectedObjectIds,
+                World.BaseWorld.Parameters.ChunkSizeMeters);
+        if (patch.IsEmpty)
+        {
+            LastMessage = "请选择互通连接、铁路节点或轨道组";
+            Changed?.Invoke();
+            return CommandStatus.Rejected;
+        }
+
+        var result = Submit(
+            new ApplyRailEditCommand(patch, World.Revision));
+        if (result.Status == CommandStatus.Accepted)
+        {
+            LastMessage = "所选互通连接已断开，可撤销恢复";
+            Changed?.Invoke();
+        }
+
+        return result.Status;
+    }
+
+    public CommandStatus SplitTrackAt(
+        WorldPoint point,
+        double radiusMeters)
+    {
+        var nearest = World.RailTopology.Tracks.Values
+            .Select(
+                track => new
+                {
+                    Track = track,
+                    Distance = DistanceToPolylineMeters(
+                        point,
+                        World.RailTopology.Alignments[
+                            track.AlignmentId].ControlPoints)
+                })
+            .Where(item => item.Distance <= radiusMeters)
+            .OrderBy(item => item.Distance)
+            .ThenBy(item => item.Track.Id)
+            .FirstOrDefault();
+        if (nearest is null)
+        {
+            LastMessage = "点击位置附近没有可拆分的双线轨道";
+            Changed?.Invoke();
+            return CommandStatus.Rejected;
+        }
+
+        RailGraphPatch patch;
+        try
+        {
+            patch = new RailTopologyEditStrategy(
+                    NewIdSource("split"))
+                .CreateSplitPatch(
+                    World.RailTopology,
+                    nearest.Track.Id,
+                    point,
+                    World.BaseWorld.Parameters.ChunkSizeMeters);
+        }
+        catch (Exception exception)
+            when (exception is ArgumentException or
+                  InvalidOperationException)
+        {
+            LastMessage = exception.Message;
+            Changed?.Invoke();
+            return CommandStatus.Rejected;
+        }
+
+        patch = AcknowledgePresetWarnings(patch);
+        var result = Submit(
+            new ApplyRailEditCommand(patch, World.Revision));
+        if (result.Status == CommandStatus.Accepted)
+        {
+            var groupId = SelectableIdForTrack(
+                patch.AddedTracks[0].Id);
+            _selectedObjectIds = ImmutableHashSet.Create(groupId);
+            SelectedObjectId = groupId;
+            LastMessage = "轨道已在点击位置拆分，可继续接入联络线";
+            Changed?.Invoke();
+        }
+
+        return result.Status;
     }
 
     public void CancelDraft()
@@ -599,6 +847,7 @@ public sealed class WorldEditorController : ISnapshotContributor
         SynchronizeDemoReferencesFromTopology();
         CurrentTool = WorldEditorTool.Inspect;
         SelectedObjectId = null;
+        _selectedObjectIds = ImmutableHashSet<StableId>.Empty;
         LastMessage = $"已读取：{_savePath}";
         Changed?.Invoke();
     }
@@ -687,6 +936,11 @@ public sealed class WorldEditorController : ISnapshotContributor
 
     private void SynchronizeDemoReferencesFromTopology()
     {
+        _mainGroupId = null;
+        _secondLineGroupId = null;
+        _connectorGroupId = null;
+        _mainJunctionStationId = null;
+        _secondLineJunctionStationId = null;
         _mainGroupId = FindDemoGroup("-demo-main:");
         _secondLineGroupId = FindDemoGroup("-demo-second:");
         _connectorGroupId = FindDemoGroup("-demo-link:");
@@ -918,6 +1172,70 @@ public sealed class WorldEditorController : ISnapshotContributor
     {
         return new DeterministicStableIdSource(
             $"world-{Seed}-rev-{World.Revision}-{purpose}");
+    }
+
+    private void ClearSelection()
+    {
+        _selectedObjectIds = ImmutableHashSet<StableId>.Empty;
+        SelectedObjectId = null;
+    }
+
+    private StableId SelectableIdForTrack(StableId trackId)
+    {
+        return World.RailTopology.TrackGroups.Values
+            .Where(group => group.TrackIds.Contains(trackId))
+            .OrderBy(group => group.Id)
+            .Select(group => group.Id)
+            .FirstOrDefault(trackId);
+    }
+
+    private static double DistanceToPolylineMeters(
+        WorldPoint point,
+        ImmutableArray<WorldPoint> points)
+    {
+        var minimumSquared = double.PositiveInfinity;
+        for (var index = 0; index < points.Length - 1; index++)
+        {
+            var start = points[index];
+            var end = points[index + 1];
+            var deltaX =
+                (end.XMillimeters - start.XMillimeters) / 1000d;
+            var deltaY =
+                (end.YMillimeters - start.YMillimeters) / 1000d;
+            var pointX =
+                (point.XMillimeters - start.XMillimeters) / 1000d;
+            var pointY =
+                (point.YMillimeters - start.YMillimeters) / 1000d;
+            var lengthSquared =
+                (deltaX * deltaX) + (deltaY * deltaY);
+            var t = Math.Clamp(
+                ((pointX * deltaX) + (pointY * deltaY)) /
+                lengthSquared,
+                0d,
+                1d);
+            var distanceX = pointX - (deltaX * t);
+            var distanceY = pointY - (deltaY * t);
+            minimumSquared = Math.Min(
+                minimumSquared,
+                (distanceX * distanceX) +
+                (distanceY * distanceY));
+        }
+
+        return Math.Sqrt(minimumSquared);
+    }
+
+    private static bool Intersects(
+        WorldBounds bounds,
+        ImmutableArray<WorldPoint> points)
+    {
+        return points.Max(point => point.XMillimeters) >=
+            bounds.Minimum.XMillimeters &&
+            points.Min(point => point.XMillimeters) <=
+            bounds.Maximum.XMillimeters &&
+            points.Max(point => point.YMillimeters) >=
+            bounds.Minimum.YMillimeters &&
+            points.Min(point => point.YMillimeters) <=
+            bounds.Maximum.YMillimeters;
     }
 
     private static RailNode FindNodeForStation(

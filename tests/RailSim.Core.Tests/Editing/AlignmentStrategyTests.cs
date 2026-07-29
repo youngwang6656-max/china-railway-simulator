@@ -53,6 +53,28 @@ public sealed class AlignmentStrategyTests
     }
 
     [Fact]
+    public void CommittedAlignmentsUseTheSmoothedPreviewGeometry()
+    {
+        var draft = new ControlPointSplineStrategy().Build(
+        [
+            Waypoint(0, 0, null),
+            Waypoint(100, 80, null),
+            Waypoint(220, 20, null)
+        ]);
+
+        var patch = new DoubleTrackCorridorStrategy(
+            new DeterministicStableIdSource("smoothed-commit"))
+            .CreatePatch(
+                RailTopology.Empty,
+                draft,
+                TrackPlacementOptions.HighSpeedDoubleTrack);
+
+        var alignment = Assert.Single(patch.AddedAlignments);
+        Assert.Equal(draft.SampledPoints, alignment.ControlPoints);
+        Assert.True(alignment.ControlPoints.Length > draft.Waypoints.Length);
+    }
+
+    [Fact]
     public void ExplicitConnectorAddsOnlyRequestedMovements()
     {
         var mainPatch = new DoubleTrackCorridorStrategy(

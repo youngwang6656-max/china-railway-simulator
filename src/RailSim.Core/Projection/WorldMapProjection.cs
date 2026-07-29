@@ -8,10 +8,12 @@ public sealed class WorldMapProjection : IWorldProjection
 {
     private readonly IMapLodPolicy _lodPolicy;
     private readonly IWorldRegionProvider _regionProvider;
+    private readonly IMacroTopologyProjection? _macroTopologyProjection;
     private readonly object _railIndexGate = new();
     private RailTopology? _indexedTopology;
     private RailSpatialIndex? _railIndex;
     private int _indexedChunkSizeMeters;
+    private long _indexedWorldRevision = -1;
 
     public WorldMapProjection(IMapLodPolicy lodPolicy)
         : this(lodPolicy, new GridWorldRegionProvider())
@@ -21,11 +23,20 @@ public sealed class WorldMapProjection : IWorldProjection
     public WorldMapProjection(
         IMapLodPolicy lodPolicy,
         IWorldRegionProvider regionProvider)
+        : this(lodPolicy, regionProvider, null)
+    {
+    }
+
+    public WorldMapProjection(
+        IMapLodPolicy lodPolicy,
+        IWorldRegionProvider regionProvider,
+        IMacroTopologyProjection? macroTopologyProjection)
     {
         _lodPolicy = lodPolicy ??
             throw new ArgumentNullException(nameof(lodPolicy));
         _regionProvider = regionProvider ??
             throw new ArgumentNullException(nameof(regionProvider));
+        _macroTopologyProjection = macroTopologyProjection;
     }
 
     public WorldMapFrame Project(
@@ -40,9 +51,7 @@ public sealed class WorldMapProjection : IWorldProjection
         var region = world.BaseWorld.RegionIndex.Query(
             queryBounds,
             _regionProvider);
-        var railRegion = GetRailIndex(
-                world.RailTopology,
-                world.BaseWorld.Parameters.ChunkSizeMeters)
+        var railRegion = GetRailIndex(world)
             .Query(queryBounds, _regionProvider);
         var rivers = region.RiverIds
             .OrderBy(id => id)
@@ -76,16 +85,20 @@ public sealed class WorldMapProjection : IWorldProjection
                     station.Tier,
                     station.Position))
             .ToImmutableArray();
-        var tracks = lod == MapLod.Regional
-            ? ProjectGroups(
+        var tracks = _macroTopologyProjection?.Project(
                 world.RailTopology,
                 viewport.Bounds,
-                railRegion.TrackIds,
-                railRegion.TrackGroupIds)
-            : ProjectTracks(
-                world.RailTopology,
-                viewport.Bounds,
-                railRegion.TrackIds);
+                lod) ??
+            (lod == MapLod.Regional
+                ? ProjectGroups(
+                    world.RailTopology,
+                    viewport.Bounds,
+                    railRegion.TrackIds,
+                    railRegion.TrackGroupIds)
+                : ProjectTracks(
+                    world.RailTopology,
+                    viewport.Bounds,
+                    railRegion.TrackIds));
         var nodes = lod == MapLod.Edit
             ? ProjectNodes(
                 world.RailTopology,
@@ -258,20 +271,36 @@ public sealed class WorldMapProjection : IWorldProjection
             .ToImmutableArray();
     }
 
-    private RailSpatialIndex GetRailIndex(
-        RailTopology topology,
-        int chunkSizeMeters)
+    private RailSpatialIndex GetRailIndex(WorldState world)
     {
         lock (_railIndexGate)
         {
+            var topology = world.RailTopology;
+            var chunkSizeMeters =
+                world.BaseWorld.Parameters.ChunkSizeMeters;
             if (!ReferenceEquals(_indexedTopology, topology) ||
                 _indexedChunkSizeMeters != chunkSizeMeters)
             {
-                _railIndex = RailSpatialIndex.Build(
-                    topology,
-                    chunkSizeMeters);
+                if (_railIndex is not null &&
+                    _indexedChunkSizeMeters == chunkSizeMeters &&
+                    world.RailChange is not null &&
+                    world.RailChange.BaseRevision ==
+                    _indexedWorldRevision)
+                {
+                    _railIndex = _railIndex.Update(
+                        topology,
+                        world.RailChange);
+                }
+                else
+                {
+                    _railIndex = RailSpatialIndex.Build(
+                        topology,
+                        chunkSizeMeters);
+                }
+
                 _indexedTopology = topology;
                 _indexedChunkSizeMeters = chunkSizeMeters;
+                _indexedWorldRevision = world.Revision;
             }
 
             return _railIndex!;

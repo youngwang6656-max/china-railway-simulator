@@ -193,6 +193,24 @@ public sealed class ProceduralWorldGeneratorTests
                 WorldGenerationParameters.CreateRegional(88)));
     }
 
+    [Fact]
+    public void ExternalTerrainSourceFeedsTheDefaultGenerationPipeline()
+    {
+        var defaults = new ProceduralWorldGenerator();
+        var source = new CountingTerrainSource(defaults);
+        var generator = new ProceduralWorldGenerator(
+            source,
+            defaults,
+            defaults);
+
+        var world = generator.Generate(
+            WorldGenerationParameters.CreateRegional(89));
+
+        Assert.Equal(1, source.CallCount);
+        Assert.Equal(512, world.Terrain.Width);
+        Assert.Equal(64, world.Cities.Count);
+    }
+
     private sealed class CountingTerrainGenerator(
         ITerrainGenerator inner) : ITerrainGenerator
     {
@@ -256,6 +274,21 @@ public sealed class ProceduralWorldGeneratorTests
                     checked(
                         (parameters.HeightSamplesX - 1) *
                         parameters.HeightSamplesY)));
+        }
+    }
+
+    private sealed class CountingTerrainSource(
+        ITerrainGenerator inner) : ITerrainSource
+    {
+        public int CallCount { get; private set; }
+
+        public HeightField ReadTerrain(
+            WorldGenerationParameters parameters)
+        {
+            CallCount++;
+            return inner.GenerateTerrain(
+                parameters,
+                SeedDeriver.Derive(parameters.Seed, "terrain"));
         }
     }
 }
