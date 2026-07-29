@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using RailSim.Core.Rail;
 
 namespace RailSim.Core.World;
 
@@ -70,6 +71,22 @@ public static class WorldContentHasher
         return Convert.ToHexString(SHA256.HashData(stream.ToArray()));
     }
 
+    public static string HashState(WorldState world)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+        using var stream = new MemoryStream();
+        using (var writer = new BinaryWriter(
+                   stream,
+                   Encoding.UTF8,
+                   leaveOpen: true))
+        {
+            writer.Write(world.BaseWorld.ContentHash);
+            WriteTopology(writer, world.RailTopology);
+        }
+
+        return Convert.ToHexString(SHA256.HashData(stream.ToArray()));
+    }
+
     private static void WriteParameters(
         BinaryWriter writer,
         WorldGenerationParameters parameters)
@@ -104,6 +121,64 @@ public static class WorldContentHasher
         if (id.HasValue)
         {
             writer.Write(id.Value.Value);
+        }
+    }
+
+    private static void WriteTopology(
+        BinaryWriter writer,
+        RailTopology topology)
+    {
+        foreach (var node in topology.Nodes.Values.OrderBy(item => item.Id))
+        {
+            writer.Write(node.Id.Value);
+            writer.Write((int)node.Kind);
+            WritePoint(writer, node.Position);
+            WriteOptionalId(writer, node.StationId);
+        }
+
+        foreach (var port in topology.Ports.Values.OrderBy(item => item.Id))
+        {
+            writer.Write(port.Id.Value);
+            writer.Write(port.NodeId.Value);
+            writer.Write((int)port.Direction);
+        }
+
+        foreach (var alignment in topology.Alignments.Values.OrderBy(item => item.Id))
+        {
+            writer.Write(alignment.Id.Value);
+            writer.Write(alignment.LengthMillimeters);
+            writer.Write(alignment.ControlPoints.Length);
+            foreach (var point in alignment.ControlPoints)
+            {
+                WritePoint(writer, point);
+            }
+        }
+
+        foreach (var track in topology.Tracks.Values.OrderBy(item => item.Id))
+        {
+            writer.Write(track.Id.Value);
+            writer.Write(track.FromPortId.Value);
+            writer.Write(track.ToPortId.Value);
+            writer.Write(track.AlignmentId.Value);
+            writer.Write(track.LateralOffsetMillimeters);
+            writer.Write(track.DesignSpeedKph);
+        }
+
+        foreach (var group in topology.TrackGroups.Values.OrderBy(item => item.Id))
+        {
+            writer.Write(group.Id.Value);
+            foreach (var trackId in group.TrackIds.OrderBy(item => item))
+            {
+                writer.Write(trackId.Value);
+            }
+        }
+
+        foreach (var connection in topology.Connections.Values.OrderBy(item => item.Id))
+        {
+            writer.Write(connection.Id.Value);
+            writer.Write(connection.NodeId.Value);
+            writer.Write(connection.FromTrackId.Value);
+            writer.Write(connection.ToTrackId.Value);
         }
     }
 }

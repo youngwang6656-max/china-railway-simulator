@@ -188,6 +188,124 @@ public sealed record RailTopology
                 "rail.connection.duplicate"));
     }
 
+    public RailTopology RemoveConnection(StableId id)
+    {
+        EnsureExists(Connections, id, "rail.connection.missing");
+        return new RailTopology(
+            Nodes,
+            Ports,
+            Alignments,
+            Tracks,
+            TrackGroups,
+            Connections.Remove(id));
+    }
+
+    public RailTopology RemoveTrackGroup(StableId id)
+    {
+        EnsureExists(TrackGroups, id, "rail.group.missing");
+        return new RailTopology(
+            Nodes,
+            Ports,
+            Alignments,
+            Tracks,
+            TrackGroups.Remove(id),
+            Connections);
+    }
+
+    public RailTopology RemoveTrack(StableId id)
+    {
+        EnsureExists(Tracks, id, "rail.track.missing");
+        if (Connections.Values.Any(
+                connection =>
+                    connection.FromTrackId == id ||
+                    connection.ToTrackId == id))
+        {
+            throw Error(
+                "rail.track.connection_exists",
+                $"Track {id} is still referenced by a connection.");
+        }
+
+        if (TrackGroups.Values.Any(group => group.TrackIds.Contains(id)))
+        {
+            throw Error(
+                "rail.track.group_exists",
+                $"Track {id} is still referenced by a track group.");
+        }
+
+        return new RailTopology(
+            Nodes,
+            Ports,
+            Alignments,
+            Tracks.Remove(id),
+            TrackGroups,
+            Connections);
+    }
+
+    public RailTopology RemoveAlignment(StableId id)
+    {
+        EnsureExists(Alignments, id, "rail.alignment.missing");
+        if (Tracks.Values.Any(track => track.AlignmentId == id))
+        {
+            throw Error(
+                "rail.alignment.track_exists",
+                $"Alignment {id} is still referenced by a track.");
+        }
+
+        return new RailTopology(
+            Nodes,
+            Ports,
+            Alignments.Remove(id),
+            Tracks,
+            TrackGroups,
+            Connections);
+    }
+
+    public RailTopology RemovePort(StableId id)
+    {
+        EnsureExists(Ports, id, "rail.port.missing");
+        if (Tracks.Values.Any(
+                track => track.FromPortId == id || track.ToPortId == id))
+        {
+            throw Error(
+                "rail.port.track_exists",
+                $"Port {id} is still referenced by a track.");
+        }
+
+        return new RailTopology(
+            Nodes,
+            Ports.Remove(id),
+            Alignments,
+            Tracks,
+            TrackGroups,
+            Connections);
+    }
+
+    public RailTopology RemoveNode(StableId id)
+    {
+        EnsureExists(Nodes, id, "rail.node.missing");
+        if (Ports.Values.Any(port => port.NodeId == id))
+        {
+            throw Error(
+                "rail.node.port_exists",
+                $"Node {id} is still referenced by a port.");
+        }
+
+        if (Connections.Values.Any(connection => connection.NodeId == id))
+        {
+            throw Error(
+                "rail.node.connection_exists",
+                $"Node {id} is still referenced by a connection.");
+        }
+
+        return new RailTopology(
+            Nodes.Remove(id),
+            Ports,
+            Alignments,
+            Tracks,
+            TrackGroups,
+            Connections);
+    }
+
     private static ImmutableDictionary<StableId, TValue> AddUnique<TValue>(
         ImmutableDictionary<StableId, TValue> values,
         StableId id,
@@ -202,6 +320,19 @@ public sealed record RailTopology
         }
 
         return values.Add(id, value);
+    }
+
+    private static void EnsureExists<TValue>(
+        ImmutableDictionary<StableId, TValue> values,
+        StableId id,
+        string missingCode)
+    {
+        if (!values.ContainsKey(id))
+        {
+            throw Error(
+                missingCode,
+                $"Rail entity ID {id} does not exist.");
+        }
     }
 
     private static RailTopologyException Error(

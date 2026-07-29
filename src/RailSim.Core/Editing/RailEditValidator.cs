@@ -39,6 +39,16 @@ public sealed class RailEditValidator : IRailEditValidator
         ArgumentNullException.ThrowIfNull(topology);
         ArgumentNullException.ThrowIfNull(patch);
         var issues = ImmutableArray.CreateBuilder<RailValidationIssue>();
+        if (patch.IsEmpty)
+        {
+            issues.Add(new RailValidationIssue(
+                "rail.patch.empty",
+                RailValidationSeverity.Error,
+                null,
+                null));
+            return new RailValidationResult(issues.ToImmutable());
+        }
+
         try
         {
             _ = patch.ApplyTo(topology);

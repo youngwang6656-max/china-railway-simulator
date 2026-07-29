@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.Immutable;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 
@@ -30,6 +31,25 @@ internal static class ImmutableCommandTypeValidator
         if (IsKnownImmutable(type))
         {
             return true;
+        }
+
+        if (type.IsGenericType)
+        {
+            var definition = type.GetGenericTypeDefinition();
+            if (definition == typeof(ImmutableArray<>) ||
+                definition == typeof(ImmutableList<>))
+            {
+                return IsDeeplyImmutable(
+                    type.GetGenericArguments()[0],
+                    visiting);
+            }
+
+            if (definition == typeof(ImmutableDictionary<,>))
+            {
+                var arguments = type.GetGenericArguments();
+                return IsDeeplyImmutable(arguments[0], visiting) &&
+                    IsDeeplyImmutable(arguments[1], visiting);
+            }
         }
 
         var nullableValueType = Nullable.GetUnderlyingType(type);
