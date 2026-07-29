@@ -37,28 +37,41 @@ public static class WorldChunkCoverage
         {
             var start = points[index - 1];
             var end = points[index];
-            var maximumDelta = Math.Max(
-                Math.Abs(end.XMillimeters - start.XMillimeters),
-                Math.Abs(end.YMillimeters - start.YMillimeters));
-            var sampleStride = Math.Max(1L, chunkSizeMillimeters / 4);
-            var steps = Math.Max(
-                1L,
-                (maximumDelta + sampleStride - 1) / sampleStride);
-            for (var step = 0L; step <= steps; step++)
+            var minimum = new WorldPoint(
+                checked(
+                    Math.Min(start.XMillimeters, end.XMillimeters) -
+                    paddingMillimeters),
+                checked(
+                    Math.Min(start.YMillimeters, end.YMillimeters) -
+                    paddingMillimeters));
+            var maximum = new WorldPoint(
+                checked(
+                    Math.Max(start.XMillimeters, end.XMillimeters) +
+                    paddingMillimeters),
+                checked(
+                    Math.Max(start.YMillimeters, end.YMillimeters) +
+                    paddingMillimeters));
+            var minimumChunk = WorldChunkId.FromPoint(
+                minimum,
+                chunkSizeMeters);
+            var maximumChunk = WorldChunkId.FromPoint(
+                maximum,
+                chunkSizeMeters);
+            for (var y = minimumChunk.Y; y <= maximumChunk.Y; y++)
             {
-                var ratio = step / (double)steps;
-                var point = new WorldPoint(
-                    checked((long)Math.Round(
-                        start.XMillimeters +
-                        ((end.XMillimeters - start.XMillimeters) * ratio))),
-                    checked((long)Math.Round(
-                        start.YMillimeters +
-                        ((end.YMillimeters - start.YMillimeters) * ratio))));
-                AddPadded(
-                    chunks,
-                    point,
-                    chunkSizeMeters,
-                    paddingMillimeters);
+                for (var x = minimumChunk.X; x <= maximumChunk.X; x++)
+                {
+                    if (IntersectsExpandedChunk(
+                            start,
+                            end,
+                            x,
+                            y,
+                            chunkSizeMillimeters,
+                            paddingMillimeters))
+                    {
+                        chunks.Add(new WorldChunkId(x, y));
+                    }
+                }
             }
         }
 
@@ -66,6 +79,71 @@ public static class WorldChunkCoverage
             .OrderBy(chunk => chunk.X)
             .ThenBy(chunk => chunk.Y)
             .ToImmutableArray();
+    }
+
+    private static bool IntersectsExpandedChunk(
+        WorldPoint start,
+        WorldPoint end,
+        long chunkX,
+        long chunkY,
+        long chunkSizeMillimeters,
+        long paddingMillimeters)
+    {
+        var minimumX = checked(
+            (chunkX * chunkSizeMillimeters) - paddingMillimeters);
+        var maximumX = checked(
+            ((chunkX + 1) * chunkSizeMillimeters) +
+            paddingMillimeters);
+        var minimumY = checked(
+            (chunkY * chunkSizeMillimeters) - paddingMillimeters);
+        var maximumY = checked(
+            ((chunkY + 1) * chunkSizeMillimeters) +
+            paddingMillimeters);
+        var deltaX =
+            (double)end.XMillimeters - start.XMillimeters;
+        var deltaY =
+            (double)end.YMillimeters - start.YMillimeters;
+        var minimumT = 0d;
+        var maximumT = 1d;
+        return ClipAxis(
+                start.XMillimeters,
+                deltaX,
+                minimumX,
+                maximumX,
+                ref minimumT,
+                ref maximumT) &&
+            ClipAxis(
+                start.YMillimeters,
+                deltaY,
+                minimumY,
+                maximumY,
+                ref minimumT,
+                ref maximumT);
+    }
+
+    private static bool ClipAxis(
+        long start,
+        double delta,
+        long minimum,
+        long maximum,
+        ref double minimumT,
+        ref double maximumT)
+    {
+        if (delta == 0)
+        {
+            return start >= minimum && start <= maximum;
+        }
+
+        var first = (minimum - start) / delta;
+        var second = (maximum - start) / delta;
+        if (first > second)
+        {
+            (first, second) = (second, first);
+        }
+
+        minimumT = Math.Max(minimumT, first);
+        maximumT = Math.Min(maximumT, second);
+        return minimumT <= maximumT;
     }
 
     private static void AddPadded(

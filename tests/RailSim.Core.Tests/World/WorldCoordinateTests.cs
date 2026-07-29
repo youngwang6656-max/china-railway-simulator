@@ -100,4 +100,17 @@ public sealed class WorldCoordinateTests
         Assert.Contains(new WorldChunkId(2, 2), chunks);
         Assert.Contains(new WorldChunkId(3, 3), chunks);
     }
+
+    [Fact]
+    public void ShortCornerCrossingStillIndexesClippedChunk()
+    {
+        var chunks = WorldChunkCoverage.TracePolyline(
+        [
+            new WorldPoint(3_000, 2_000),
+            new WorldPoint(403_000, 398_000)
+        ],
+        chunkSizeMeters: 100);
+
+        Assert.Contains(new WorldChunkId(1, 0), chunks);
+    }
 }
