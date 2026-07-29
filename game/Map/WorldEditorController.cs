@@ -27,8 +27,15 @@ public sealed class WorldEditorController : ISnapshotContributor
     private readonly IWorldProjection _projection;
     private readonly IWorldRepository _repository;
     private readonly string _savePath;
-    private readonly List<DraftWaypoint> _draftWaypoints = [];
+    private readonly RailDrawingSession _drawingSession =
+        new(new RailSnapResolver());
+    private readonly RailDrawingPreviewBuilder _previewBuilder =
+        new(new ConservativeCurveSpeedEstimator());
+    private readonly RailDrawingSnapCandidateProvider
+        _snapCandidateProvider = new();
     private WorldEditorSession _session = null!;
+    private RailDrawingPreview? _drawingPreview;
+    private AlignmentDraft? _confirmedDrawingDraft;
     private ISimulationQuery? _query;
     private SimulationHost? _host;
     private StableId? _mainGroupId;
@@ -97,13 +104,16 @@ public sealed class WorldEditorController : ISnapshotContributor
         _selectedObjectIds;
 
     public ImmutableArray<DraftWaypoint> DraftWaypoints =>
-        _draftWaypoints.ToImmutableArray();
+        _drawingSession.ConfirmedWaypoints;
 
     public AlignmentDraft? Draft =>
-        _draftWaypoints.Count >= 2
-            ? new ControlPointSplineStrategy().Build(
-                _draftWaypoints.ToImmutableArray())
-            : null;
+        BuildConfirmedDraft();
+
+    public RailDrawingState DrawingState => _drawingSession.State;
+
+    public RailDrawingPreview? DrawingPreview => _drawingPreview;
+
+    public RailSnapResult? CurrentSnap => _drawingSession.CurrentSnap;
 
     public static WorldEditorController CreateDefault(
         ulong seed,
@@ -144,7 +154,7 @@ public sealed class WorldEditorController : ISnapshotContributor
         var generated = _generator.Generate(
             WorldGenerationParameters.CreateRegional(seed));
         ResetSession(new WorldState(0, generated, RailTopology.Empty));
-        _draftWaypoints.Clear();
+        ResetDrawingDraft();
         _pendingWarningFingerprint = null;
         _connectorMovementPlan = 0;
         _mainGroupId = null;
@@ -164,7 +174,7 @@ public sealed class WorldEditorController : ISnapshotContributor
     {
         if (tool != CurrentTool)
         {
-            _draftWaypoints.Clear();
+            ResetDrawingDraft();
             _realignTrackId = null;
             _pendingWarningFingerprint = null;
             _connectorMovementPlan = 0;
@@ -270,27 +280,31 @@ public sealed class WorldEditorController : ISnapshotContributor
         double snapRadiusMeters)
     {
         var waypoint = SnapWaypoint(point, snapRadiusMeters);
-        var index = _draftWaypoints.Count;
+        var index = DraftWaypoints.Length;
         if (CurrentTool == WorldEditorTool.RealignTrack &&
             _realignTrackId.HasValue &&
-            _draftWaypoints.Count >= 2)
+            DraftWaypoints.Length >= 2)
         {
             index = FindNearestDraftSegment(point) + 1;
             waypoint = new DraftWaypoint(waypoint.Position, null);
-            _draftWaypoints.Insert(index, waypoint);
+            var updated = DraftWaypoints.ToBuilder();
+            updated.Insert(index, waypoint);
+            _drawingSession.Load(updated.ToImmutable());
         }
         else
         {
-            _draftWaypoints.Add(waypoint);
+            ConfirmDirectWaypoint(waypoint);
         }
 
+        _drawingPreview = null;
+        _confirmedDrawingDraft = null;
         _pendingWarningFingerprint = null;
         _connectorMovementPlan = 0;
         LastMessage = waypoint.NodeId.HasValue
             ? $"已吸附到节点 {waypoint.NodeId.Value}"
             : waypoint.StationId.HasValue
                 ? $"已吸附到车站 {waypoint.StationId.Value}"
-                : $"已添加控制点 {_draftWaypoints.Count}";
+                : $"已添加控制点 {DraftWaypoints.Length}";
         Changed?.Invoke();
         return index;
     }
@@ -300,21 +314,25 @@ public sealed class WorldEditorController : ISnapshotContributor
         WorldPoint point,
         double snapRadiusMeters)
     {
-        if (index < 0 || index >= _draftWaypoints.Count)
+        if (index < 0 || index >= DraftWaypoints.Length)
         {
             throw new ArgumentOutOfRangeException(nameof(index));
         }
 
         if (CurrentTool == WorldEditorTool.RealignTrack &&
             _realignTrackId.HasValue &&
-            (index == 0 || index == _draftWaypoints.Count - 1))
+            (index == 0 || index == DraftWaypoints.Length - 1))
         {
             LastMessage = "改线必须保留两端既有拓扑边界";
             Changed?.Invoke();
             return;
         }
 
-        _draftWaypoints[index] = SnapWaypoint(point, snapRadiusMeters);
+        _drawingSession.MoveWaypoint(
+            index,
+            SnapWaypoint(point, snapRadiusMeters));
+        _drawingPreview = null;
+        _confirmedDrawingDraft = null;
         _pendingWarningFingerprint = null;
         _connectorMovementPlan = 0;
         LastMessage = "控制点已调整";
@@ -323,21 +341,23 @@ public sealed class WorldEditorController : ISnapshotContributor
 
     public void RemoveWaypoint(int index)
     {
-        if (index < 0 || index >= _draftWaypoints.Count)
+        if (index < 0 || index >= DraftWaypoints.Length)
         {
             throw new ArgumentOutOfRangeException(nameof(index));
         }
 
         if (CurrentTool == WorldEditorTool.RealignTrack &&
             _realignTrackId.HasValue &&
-            (index == 0 || index == _draftWaypoints.Count - 1))
+            (index == 0 || index == DraftWaypoints.Length - 1))
         {
             LastMessage = "不能删除改线草案的端点";
             Changed?.Invoke();
             return;
         }
 
-        _draftWaypoints.RemoveAt(index);
+        _drawingSession.RemoveWaypoint(index);
+        _drawingPreview = null;
+        _confirmedDrawingDraft = null;
         _pendingWarningFingerprint = null;
         _connectorMovementPlan = 0;
         LastMessage = "控制点已删除";
@@ -346,14 +366,172 @@ public sealed class WorldEditorController : ISnapshotContributor
 
     public void RemoveLastWaypoint()
     {
-        if (_draftWaypoints.Count == 0)
+        if (DraftWaypoints.IsEmpty)
         {
             LastMessage = "当前没有可删除的控制点";
             Changed?.Invoke();
             return;
         }
 
-        RemoveWaypoint(_draftWaypoints.Count - 1);
+        RemoveWaypoint(DraftWaypoints.Length - 1);
+    }
+
+    public void UpdateDrawingPreview(
+        WorldPoint point,
+        double metersPerPixel,
+        bool snappingDisabled)
+    {
+        if (!IsDrawingTool(CurrentTool))
+        {
+            return;
+        }
+
+        if (!double.IsFinite(metersPerPixel) ||
+            metersPerPixel <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(metersPerPixel));
+        }
+
+        const double snapRadiusPixels = 16;
+        var candidates = _snapCandidateProvider.BuildCandidates(
+            World,
+            point,
+            DraftWaypoints,
+            metersPerPixel);
+        _drawingSession.UpdatePreview(
+            new RailSnapRequest(
+                point,
+                candidates,
+                snappingDisabled,
+                snapRadiusPixels));
+        _pendingWarningFingerprint = null;
+        if (_drawingSession.PreviewWaypoints.Length < 2 ||
+            _drawingSession.CurrentSnap is null)
+        {
+            _drawingPreview = null;
+            Changed?.Invoke();
+            return;
+        }
+
+        var previewWaypoints = _drawingSession.PreviewWaypoints;
+        var hints = new AlignmentEndpointHints(
+            _snapCandidateProvider.FindEndpointHeading(
+                World,
+                previewWaypoints[0],
+                previewWaypoints[1].Position,
+                isStart: true),
+            _snapCandidateProvider.FindEndpointHeading(
+                World,
+                previewWaypoints[^1],
+                previewWaypoints[^2].Position,
+                isStart: false));
+        var options = CurrentTool == WorldEditorTool.DrawConnector
+            ? new TrackPlacementOptions(5_000, 160)
+            : TrackPlacementOptions.HighSpeedDoubleTrack;
+        try
+        {
+            _drawingPreview = _previewBuilder.Build(
+                previewWaypoints,
+                _drawingSession.CurrentSnap,
+                options,
+                hints,
+                metersPerPixel);
+            LastMessage = FormatPreviewMessage(
+                _drawingPreview.Metrics,
+                _drawingPreview.Snap);
+        }
+        catch (Exception exception)
+            when (exception is ArgumentException or
+                  InvalidDataException or
+                  OverflowException)
+        {
+            _drawingPreview = null;
+            LastMessage = $"无效线路候选：{exception.Message}";
+        }
+
+        Changed?.Invoke();
+    }
+
+    public RailDrawingActionResult ConfirmDrawingPoint()
+    {
+        var result = _drawingSession.ConfirmPreviewPoint();
+        if (result.Accepted)
+        {
+            if (_drawingPreview is not null &&
+                _drawingPreview.Draft.Waypoints.SequenceEqual(
+                    DraftWaypoints))
+            {
+                _confirmedDrawingDraft = _drawingPreview.Draft;
+            }
+            else
+            {
+                _confirmedDrawingDraft = null;
+            }
+
+            LastMessage = $"已确认控制点 {DraftWaypoints.Length}";
+        }
+        else
+        {
+            LastMessage = result.Code switch
+            {
+                "rail.drawing.duplicate_point" =>
+                    "候选点与上一控制点重合",
+                _ => "请先移动鼠标选择线路候选点"
+            };
+        }
+
+        Changed?.Invoke();
+        return result;
+    }
+
+    public RailDrawingUndoResult UndoDrawingStep()
+    {
+        var result = _drawingSession.UndoStep();
+        _drawingPreview = null;
+        _confirmedDrawingDraft = null;
+        _pendingWarningFingerprint = null;
+        LastMessage = result switch
+        {
+            RailDrawingUndoResult.PointRemoved =>
+                $"已撤回控制点，剩余 {DraftWaypoints.Length} 个",
+            RailDrawingUndoResult.DraftCancelled =>
+                "已取消线路草案",
+            _ => "当前没有可撤回的控制点"
+        };
+        Changed?.Invoke();
+        return result;
+    }
+
+    public CommandStatus CommitDrawingAtPreview()
+    {
+        if (_drawingSession.CurrentSnap is not null &&
+            !ConfirmDrawingPoint().Accepted)
+        {
+            return CommandStatus.Rejected;
+        }
+
+        return CommitDraft();
+    }
+
+    public void BeginWaypointDrag(int index)
+    {
+        _drawingSession.BeginWaypointDrag(index);
+    }
+
+    public void FinishWaypointDrag()
+    {
+        _drawingSession.FinishWaypointDrag();
+        Changed?.Invoke();
+    }
+
+    public void CancelWaypointDrag()
+    {
+        _drawingSession.CancelWaypointDrag();
+        _drawingPreview = null;
+        _confirmedDrawingDraft = null;
+        LastMessage = "已恢复拖动前的控制点位置";
+        Changed?.Invoke();
     }
 
     public void SelectInBounds(WorldBounds bounds)
@@ -538,24 +716,28 @@ public sealed class WorldEditorController : ISnapshotContributor
         }
 
         _realignTrackId = nearest.Id;
-        _draftWaypoints.Clear();
+        var realignWaypoints =
+            ImmutableArray.CreateBuilder<DraftWaypoint>();
         for (var index = 0;
              index < alignment.ControlPoints.Length;
              index += 8)
         {
-            _draftWaypoints.Add(new DraftWaypoint(
+            realignWaypoints.Add(new DraftWaypoint(
                 alignment.ControlPoints[index],
                 null));
         }
 
-        if (_draftWaypoints[^1].Position !=
+        if (realignWaypoints[^1].Position !=
             alignment.ControlPoints[^1])
         {
-            _draftWaypoints.Add(new DraftWaypoint(
+            realignWaypoints.Add(new DraftWaypoint(
                 alignment.ControlPoints[^1],
                 null));
         }
 
+        _drawingSession.Load(realignWaypoints.ToImmutable());
+        _drawingPreview = null;
+        _confirmedDrawingDraft = null;
         _pendingWarningFingerprint = null;
         LastMessage =
             $"已载入区段 {alignment.Id}；端点锁定，可拖动或增加控制点";
@@ -565,7 +747,7 @@ public sealed class WorldEditorController : ISnapshotContributor
 
     public void CancelDraft()
     {
-        _draftWaypoints.Clear();
+        ResetDrawingDraft();
         _realignTrackId = null;
         _pendingWarningFingerprint = null;
         _connectorMovementPlan = 0;
@@ -597,12 +779,23 @@ public sealed class WorldEditorController : ISnapshotContributor
 
     private CommandStatus CommitDoubleTrackDraft(AlignmentDraft draft)
     {
-        var patch = new DoubleTrackCorridorStrategy(
-            NewIdSource("manual"))
-            .CreatePatch(
-                World.RailTopology,
-                draft,
-                TrackPlacementOptions.HighSpeedDoubleTrack);
+        RailGraphPatch patch;
+        try
+        {
+            patch = new RailDrawingCommitComposer()
+                .CreateDoubleTrackPatch(
+                    World,
+                    draft,
+                    TrackPlacementOptions.HighSpeedDoubleTrack,
+                    NewIdSource("manual"));
+        }
+        catch (RailTopologyException exception)
+        {
+            LastMessage = $"{exception.Code}: {exception.Message}";
+            Changed?.Invoke();
+            return CommandStatus.Rejected;
+        }
+
         var validation = new RailEditValidator().Validate(World, patch);
         var warningCodes = validation.Issues
             .Where(
@@ -618,6 +811,7 @@ public sealed class WorldEditorController : ISnapshotContributor
                 StringComparison.Ordinal))
         {
             _pendingWarningFingerprint = fingerprint;
+            _drawingSession.MarkWarningPending();
             LastMessage =
                 $"工程警告：{string.Join("、", warningCodes.Order())}；" +
                 "再次 Enter 或双击确认建设";
@@ -633,7 +827,9 @@ public sealed class WorldEditorController : ISnapshotContributor
             new ApplyRailEditCommand(patch, World.Revision));
         if (result.Status == CommandStatus.Accepted)
         {
-            _draftWaypoints.Clear();
+            _drawingSession.ResetAfterCommit();
+            _drawingPreview = null;
+            _confirmedDrawingDraft = null;
             _pendingWarningFingerprint = null;
         }
 
@@ -699,7 +895,9 @@ public sealed class WorldEditorController : ISnapshotContributor
             new ApplyRailEditCommand(patch, World.Revision));
         if (result.Status == CommandStatus.Accepted)
         {
-            _draftWaypoints.Clear();
+            _drawingSession.ResetAfterCommit();
+            _drawingPreview = null;
+            _confirmedDrawingDraft = null;
             _realignTrackId = null;
             _pendingWarningFingerprint = null;
             LastMessage = "既有双线已原子改线，稳定标识保持不变";
@@ -794,7 +992,9 @@ public sealed class WorldEditorController : ISnapshotContributor
             new ApplyRailEditCommand(complete, World.Revision));
         if (result.Status == CommandStatus.Accepted)
         {
-            _draftWaypoints.Clear();
+            _drawingSession.ResetAfterCommit();
+            _drawingPreview = null;
+            _confirmedDrawingDraft = null;
             _pendingWarningFingerprint = null;
         }
 
@@ -804,9 +1004,9 @@ public sealed class WorldEditorController : ISnapshotContributor
     public void CycleConnectorMovementPlan()
     {
         if (CurrentTool != WorldEditorTool.DrawConnector ||
-            _draftWaypoints.Count < 2 ||
-            !_draftWaypoints[0].NodeId.HasValue ||
-            !_draftWaypoints[^1].NodeId.HasValue)
+            DraftWaypoints.Length < 2 ||
+            !DraftWaypoints[0].NodeId.HasValue ||
+            !DraftWaypoints[^1].NodeId.HasValue)
         {
             LastMessage = "请先用联络线工具选择两个既有节点";
             Changed?.Invoke();
@@ -815,8 +1015,8 @@ public sealed class WorldEditorController : ISnapshotContributor
 
         var planCount = CountMovementPlans(
             World.RailTopology,
-            _draftWaypoints[0].NodeId!.Value,
-            _draftWaypoints[^1].NodeId!.Value);
+            DraftWaypoints[0].NodeId!.Value,
+            DraftWaypoints[^1].NodeId!.Value);
         if (planCount <= 0)
         {
             LastMessage = "所选节点没有完整的到达/出发轨道组合";
@@ -989,7 +1189,7 @@ public sealed class WorldEditorController : ISnapshotContributor
     public void Load()
     {
         ResetSession(_repository.Load(_savePath));
-        _draftWaypoints.Clear();
+        ResetDrawingDraft();
         _pendingWarningFingerprint = null;
         _mainGroupId = null;
         _secondLineGroupId = null;
@@ -1146,11 +1346,101 @@ public sealed class WorldEditorController : ISnapshotContributor
         };
     }
 
+    private static string FormatPreviewMessage(
+        RailDrawingMetrics metrics,
+        RailSnapResult snap)
+    {
+        var radius = metrics.MinimumRadiusMeters.HasValue
+            ? $"R {metrics.MinimumRadiusMeters.Value:N0} m"
+            : "R ∞";
+        var snapText = snap.Kind switch
+        {
+            RailSnapKind.RailNode => "节点吸附",
+            RailSnapKind.Station => "车站吸附",
+            RailSnapKind.TrackSplit => "轨道接入",
+            RailSnapKind.AngleGuide =>
+                $"角度 {snap.GuideAngleDegrees:+0;-0;0}°",
+            _ => "自由绘制"
+        };
+        return
+            $"本段 {metrics.CurrentSegmentLengthMillimeters / 1_000_000d:N1} km｜" +
+            $"总长 {metrics.TotalLengthMillimeters / 1_000_000d:N1} km｜" +
+            $"{radius}｜预计 {metrics.EstimatedSpeedKph} km/h｜" +
+            $"{snapText}｜纵断面待详细设计";
+    }
+
+    private void ConfirmDirectWaypoint(DraftWaypoint waypoint)
+    {
+        var kind = waypoint.NodeId.HasValue
+            ? RailSnapKind.RailNode
+            : waypoint.StationId.HasValue
+                ? RailSnapKind.Station
+                : waypoint.SplitTrackId.HasValue
+                    ? RailSnapKind.TrackSplit
+                    : RailSnapKind.Free;
+        var id = waypoint.NodeId ??
+            waypoint.StationId ??
+            waypoint.SplitTrackId;
+        var candidates = kind == RailSnapKind.Free
+            ? ImmutableArray<RailSnapCandidate>.Empty
+            :
+            [
+                new RailSnapCandidate(
+                    id,
+                    kind,
+                    waypoint,
+                    0)
+            ];
+        _drawingSession.UpdatePreview(
+            new RailSnapRequest(
+                waypoint.Position,
+                candidates,
+                false,
+                0));
+        var result = _drawingSession.ConfirmPreviewPoint();
+        if (!result.Accepted)
+        {
+            throw new InvalidOperationException(result.Code);
+        }
+    }
+
+    private AlignmentDraft? BuildConfirmedDraft()
+    {
+        var waypoints = DraftWaypoints;
+        if (waypoints.Length < 2)
+        {
+            return null;
+        }
+
+        if (_confirmedDrawingDraft is not null &&
+            _confirmedDrawingDraft.Waypoints.SequenceEqual(waypoints))
+        {
+            return _confirmedDrawingDraft;
+        }
+
+        return new ControlPointSplineStrategy().Build(waypoints);
+    }
+
+    private void ResetDrawingDraft()
+    {
+        _drawingSession.Cancel();
+        _drawingPreview = null;
+        _confirmedDrawingDraft = null;
+    }
+
+    private static bool IsDrawingTool(WorldEditorTool tool)
+    {
+        return tool is
+            WorldEditorTool.DrawDoubleTrack or
+            WorldEditorTool.DrawConnector or
+            WorldEditorTool.RealignTrack;
+    }
+
     private string DraftFingerprint()
     {
         return string.Join(
             ";",
-            _draftWaypoints.Select(
+            DraftWaypoints.Select(
                 waypoint =>
                     $"{waypoint.Position.XMillimeters}," +
                     $"{waypoint.Position.YMillimeters}," +
@@ -1357,7 +1647,8 @@ public sealed class WorldEditorController : ISnapshotContributor
 
     private int FindNearestDraftSegment(WorldPoint point)
     {
-        return Enumerable.Range(0, _draftWaypoints.Count - 1)
+        var waypoints = DraftWaypoints;
+        return Enumerable.Range(0, waypoints.Length - 1)
             .Select(
                 index => new
                 {
@@ -1365,8 +1656,8 @@ public sealed class WorldEditorController : ISnapshotContributor
                     Distance = DistanceToPolylineMeters(
                         point,
                         ImmutableArray.Create(
-                            _draftWaypoints[index].Position,
-                            _draftWaypoints[index + 1].Position))
+                            waypoints[index].Position,
+                            waypoints[index + 1].Position))
                 })
             .OrderBy(item => item.Distance)
             .ThenBy(item => item.Index)
@@ -1458,4 +1749,5 @@ public sealed class WorldEditorController : ISnapshotContributor
             .OrderBy(track => track.Id)
             .First();
     }
+
 }
