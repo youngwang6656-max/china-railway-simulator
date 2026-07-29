@@ -255,16 +255,19 @@ public partial class WorldMapView : Control
                 ScreenToWorld(mouse.Position),
                 _metersPerPixel,
                 _snappingDisabled);
+            if (mouse.DoubleClick)
+            {
+                _controller.CommitDrawingAtPreview();
+                _selectedWaypoint = -1;
+                AcceptEvent();
+                return;
+            }
+
             _draggedWaypoint = HitDraftWaypoint(mouse.Position);
             _selectedWaypoint = _draggedWaypoint;
             if (_draggedWaypoint >= 0)
             {
                 _controller.BeginWaypointDrag(_draggedWaypoint);
-            }
-            else if (mouse.DoubleClick)
-            {
-                _controller.CommitDrawingAtPreview();
-                _selectedWaypoint = -1;
             }
             else
             {
@@ -325,10 +328,11 @@ public partial class WorldMapView : Control
         if (_draggedWaypoint >= 0 &&
             motion.ButtonMask.HasFlag(MouseButtonMask.Left))
         {
-            _controller.MoveWaypoint(
+            _controller.MoveDrawingWaypoint(
                 _draggedWaypoint,
                 ScreenToWorld(motion.Position),
-                _metersPerPixel * 15);
+                _metersPerPixel,
+                motion.ShiftPressed);
             AcceptEvent();
             return;
         }

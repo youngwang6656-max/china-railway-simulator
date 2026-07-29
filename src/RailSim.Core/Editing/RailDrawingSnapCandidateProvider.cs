@@ -11,6 +11,11 @@ public sealed class RailDrawingSnapCandidateProvider
     private RailSpatialIndex? _railIndex;
     private GeneratedWorld? _indexedBaseWorld;
     private long _indexedRevision = -1;
+    private ImmutableDictionary<StableId, StableId> _nodeIdByStationId =
+        ImmutableDictionary<StableId, StableId>.Empty;
+    private ImmutableDictionary<StableId, ImmutableArray<StableId>>
+        _trackIdsByNodeId =
+            ImmutableDictionary<StableId, ImmutableArray<StableId>>.Empty;
 
     public ImmutableArray<RailSnapCandidate> BuildCandidates(
         WorldState world,
@@ -133,28 +138,23 @@ public sealed class RailDrawingSnapCandidateProvider
         var nodeId = endpoint.NodeId;
         if (!nodeId.HasValue && endpoint.StationId.HasValue)
         {
-            nodeId = world.RailTopology.Nodes.Values
-                .Where(
-                    node =>
-                        node.StationId == endpoint.StationId)
-                .OrderBy(node => node.Id)
-                .Select(node => (StableId?)node.Id)
-                .FirstOrDefault();
+            GetRailIndex(world);
+            nodeId = _nodeIdByStationId.TryGetValue(
+                endpoint.StationId.Value,
+                out var stationNodeId)
+                ? stationNodeId
+                : null;
         }
 
         if (nodeId.HasValue)
         {
-            trackIds.UnionWith(
-                world.RailTopology.Tracks.Values
-                    .Where(
-                        track =>
-                            world.RailTopology.Ports[
-                                track.FromPortId].NodeId ==
-                                nodeId.Value ||
-                            world.RailTopology.Ports[
-                                track.ToPortId].NodeId ==
-                                nodeId.Value)
-                    .Select(track => track.Id));
+            GetRailIndex(world);
+            if (_trackIdsByNodeId.TryGetValue(
+                    nodeId.Value,
+                    out var incidentTrackIds))
+            {
+                trackIds.UnionWith(incidentTrackIds);
+            }
         }
 
         if (trackIds.Count == 0)
@@ -168,6 +168,14 @@ public sealed class RailDrawingSnapCandidateProvider
         var desiredY = isStart
             ? adjacent.YMillimeters - endpoint.Position.YMillimeters
             : endpoint.Position.YMillimeters - adjacent.YMillimeters;
+        var desiredLength = Math.Sqrt(
+            ((double)desiredX * desiredX) +
+            ((double)desiredY * desiredY));
+        if (desiredLength <= 0)
+        {
+            return null;
+        }
+
         var best = trackIds
             .Where(world.RailTopology.Tracks.ContainsKey)
             .Select(
@@ -181,7 +189,10 @@ public sealed class RailDrawingSnapCandidateProvider
                         alignment.ControlPoints);
                     var x = nearest.TangentX;
                     var y = nearest.TangentY;
-                    var dot = (x * desiredX) + (y * desiredY);
+                    var tangentLength = Math.Sqrt((x * x) + (y * y));
+                    var dot =
+                        ((x * desiredX) + (y * desiredY)) /
+                        (tangentLength * desiredLength);
                     if (dot < 0)
                     {
                         x = -x;
@@ -211,6 +222,37 @@ public sealed class RailDrawingSnapCandidateProvider
             _railIndex = RailSpatialIndex.Build(
                 world.RailTopology,
                 world.BaseWorld.Parameters.ChunkSizeMeters);
+            _nodeIdByStationId = world.RailTopology.Nodes.Values
+                .Where(node => node.StationId.HasValue)
+                .GroupBy(node => node.StationId!.Value)
+                .ToImmutableDictionary(
+                    group => group.Key,
+                    group => group
+                        .OrderBy(node => node.Id)
+                        .First()
+                        .Id);
+            _trackIdsByNodeId = world.RailTopology.Tracks.Values
+                .SelectMany(
+                    track =>
+                        new[]
+                        {
+                            (
+                                NodeId: world.RailTopology.Ports[
+                                    track.FromPortId].NodeId,
+                                TrackId: track.Id),
+                            (
+                                NodeId: world.RailTopology.Ports[
+                                    track.ToPortId].NodeId,
+                                TrackId: track.Id)
+                        })
+                .GroupBy(item => item.NodeId)
+                .ToImmutableDictionary(
+                    group => group.Key,
+                    group => group
+                        .Select(item => item.TrackId)
+                        .Distinct()
+                        .OrderBy(id => id)
+                        .ToImmutableArray());
             _indexedBaseWorld = world.BaseWorld;
             _indexedRevision = world.Revision;
         }

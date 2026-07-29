@@ -111,6 +111,60 @@ public sealed class RailDrawingCommitComposerTests
             exception.Code);
     }
 
+    [Fact]
+    public void RoundedTrackSnapRemainsTheAtomicSplitPoint()
+    {
+        var generated = new ProceduralWorldGenerator().Generate(
+            WorldGenerationParameters.CreateRegional(20260731));
+        var start = new WorldPoint(0, 0);
+        var end = new WorldPoint(1_000_001, 333_331);
+        var existingDraft = new AlignmentDraft(
+            ImmutableArray.Create(
+                new DraftWaypoint(start, null),
+                new DraftWaypoint(end, null)),
+            ImmutableArray.Create(start, end));
+        var existingPatch = new DoubleTrackCorridorStrategy(
+                new DeterministicStableIdSource("oblique-existing"))
+            .CreatePatch(
+                RailTopology.Empty,
+                existingDraft,
+                TrackPlacementOptions.HighSpeedDoubleTrack);
+        var world = new WorldState(
+            0,
+            generated,
+            existingPatch.ApplyTo(RailTopology.Empty));
+        var target = world.RailTopology.Tracks.Values
+            .OrderBy(track => track.Id)
+            .First();
+        var cursor = new WorldPoint(195_028, 123_457);
+        var snap = new RailDrawingSnapCandidateProvider()
+            .BuildCandidates(
+                world,
+                cursor,
+                ImmutableArray<DraftWaypoint>.Empty,
+                metersPerPixel: 5_000)
+            .Single(candidate => candidate.Id == target.Id);
+        var expectedSplit = new WorldPoint(212_562, 70_854);
+        Assert.Equal(expectedSplit, snap.Waypoint.Position);
+        var newDraft = new ControlPointSplineStrategy().Build(
+            ImmutableArray.Create(
+                new DraftWaypoint(
+                    new WorldPoint(100_000, 500_000),
+                    null),
+                snap.Waypoint));
+
+        var patch = new RailDrawingCommitComposer()
+            .CreateDoubleTrackPatch(
+                world,
+                newDraft,
+                TrackPlacementOptions.HighSpeedDoubleTrack,
+                new DeterministicStableIdSource("oblique-attached"));
+
+        Assert.Contains(
+            patch.AddedNodes,
+            node => node.Position == expectedSplit);
+    }
+
     private static WorldState WorldWithExistingDoubleTrack()
     {
         var generated = new ProceduralWorldGenerator().Generate(

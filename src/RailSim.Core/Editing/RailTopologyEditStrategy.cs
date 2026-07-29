@@ -561,15 +561,17 @@ public sealed class RailTopologyEditStrategy
 
         var segmentStart = points[bestSegment];
         var segmentEnd = points[bestSegment + 1];
-        var point = new WorldPoint(
-            checked((long)Math.Round(
-                segmentStart.XMillimeters +
-                ((segmentEnd.XMillimeters -
-                  segmentStart.XMillimeters) * bestT))),
-            checked((long)Math.Round(
-                segmentStart.YMillimeters +
-                ((segmentEnd.YMillimeters -
-                  segmentStart.YMillimeters) * bestT))));
+        var point = bestDistanceSquared <= 1d
+            ? requested
+            : new WorldPoint(
+                checked((long)Math.Round(
+                    segmentStart.XMillimeters +
+                    ((segmentEnd.XMillimeters -
+                      segmentStart.XMillimeters) * bestT))),
+                checked((long)Math.Round(
+                    segmentStart.YMillimeters +
+                    ((segmentEnd.YMillimeters -
+                      segmentStart.YMillimeters) * bestT))));
         if (point.DistanceMetersTo(points[0]) < 1 ||
             point.DistanceMetersTo(points[^1]) < 1)
         {

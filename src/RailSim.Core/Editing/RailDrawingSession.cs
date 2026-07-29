@@ -78,7 +78,15 @@ public sealed class RailDrawingSession
                 _confirmed[^1].Position ==
                 CurrentSnap.Waypoint.Position)
             {
-                return ConfirmedWaypoints;
+                if (_confirmed[^1] == CurrentSnap.Waypoint)
+                {
+                    return ConfirmedWaypoints;
+                }
+
+                return _confirmed
+                    .Take(_confirmed.Count - 1)
+                    .Append(CurrentSnap.Waypoint)
+                    .ToImmutableArray();
             }
 
             return _confirmed
@@ -129,14 +137,31 @@ public sealed class RailDrawingSession
         if (_confirmed.Count > 0 &&
             _confirmed[^1].Position == waypoint.Position)
         {
-            return RailDrawingActionResult.Reject(
-                "rail.drawing.duplicate_point");
+            if (_confirmed[^1] == waypoint)
+            {
+                return RailDrawingActionResult.Reject(
+                    "rail.drawing.duplicate_point");
+            }
+
+            _confirmed[^1] = waypoint;
+            CurrentSnap = null;
+            State = RailDrawingState.Previewing;
+            return RailDrawingActionResult.Accept();
         }
 
         _confirmed.Add(waypoint);
         CurrentSnap = null;
         State = RailDrawingState.Previewing;
         return RailDrawingActionResult.Accept();
+    }
+
+    public void InvalidatePreview()
+    {
+        CurrentSnap = null;
+        if (State == RailDrawingState.ConfirmingWarning)
+        {
+            State = RailDrawingState.Previewing;
+        }
     }
 
     public RailDrawingUndoResult UndoStep()
@@ -170,6 +195,16 @@ public sealed class RailDrawingSession
     public void MoveWaypoint(int index, DraftWaypoint waypoint)
     {
         EnsureWaypointIndex(index);
+        if ((index > 0 &&
+             _confirmed[index - 1].Position == waypoint.Position) ||
+            (index < _confirmed.Count - 1 &&
+             _confirmed[index + 1].Position == waypoint.Position))
+        {
+            throw new ArgumentException(
+                "A waypoint cannot share its position with a neighbor.",
+                nameof(waypoint));
+        }
+
         _confirmed[index] = waypoint;
         CurrentSnap = null;
     }

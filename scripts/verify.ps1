@@ -106,7 +106,7 @@ try {
     $totalTests = [int]$counters.total
     $passedTests = [int]$counters.passed
     $failedTests = [int]$counters.failed
-    if ($failedTests -ne 0 -or $totalTests -lt 152 -or $passedTests -lt 152) {
+    if ($failedTests -ne 0 -or $totalTests -lt 156 -or $passedTests -lt 156) {
         throw "Invalid test totals: total=$totalTests passed=$passedTests failed=$failedTests."
     }
 
@@ -208,6 +208,27 @@ try {
     if ($smokeOutput -notmatch 'RAILSIM_DRAWING_FEEL_SMOKE complete=True') {
         throw "Godot drawing feel smoke marker missing.`n$smokeOutput"
     }
+    if ($smokeOutput -notmatch 'RAILSIM_DRAWING_POINTER_SMOKE committed=True') {
+        throw "Godot drawing pointer smoke marker missing.`n$smokeOutput"
+    }
+    if (
+        $smokeOutput -notmatch
+        'RAILSIM_DRAWING_INVALID_PREVIEW_SMOKE rejected=True'
+    ) {
+        throw "Godot invalid drawing preview smoke marker missing.`n$smokeOutput"
+    }
+    if (
+        $smokeOutput -notmatch
+        'RAILSIM_DRAWING_PREVIEW_IDENTITY_SMOKE equal=True'
+    ) {
+        throw "Godot drawing preview identity smoke marker missing.`n$smokeOutput"
+    }
+    if (
+        $smokeOutput -notmatch
+        'RAILSIM_DRAWING_DRAG_SMOKE indexedSnap=True shiftFree=True duplicateRejected=True'
+    ) {
+        throw "Godot drawing drag smoke marker missing.`n$smokeOutput"
+    }
 
     Write-Host "TOOLCHAIN_OK dotnet=$dotnetVersion godot=$godotVersion"
     Write-Host "TESTS_OK total=$totalTests passed=$passedTests failed=$failedTests"
@@ -226,6 +247,13 @@ try {
     Write-Host 'GODOT_MANUAL_CONNECTOR_SMOKE_OK built=True'
     Write-Host 'GODOT_EDIT_TOOLS_SMOKE_OK complete=True'
     Write-Host 'GODOT_DRAWING_FEEL_SMOKE_OK complete=True'
+    Write-Host 'GODOT_DRAWING_POINTER_SMOKE_OK committed=True'
+    Write-Host 'GODOT_DRAWING_INVALID_PREVIEW_SMOKE_OK rejected=True'
+    Write-Host 'GODOT_DRAWING_PREVIEW_IDENTITY_SMOKE_OK equal=True'
+    Write-Host (
+        'GODOT_DRAWING_DRAG_SMOKE_OK ' +
+        'indexedSnap=True shiftFree=True duplicateRejected=True'
+    )
     Write-Host 'VERIFY_OK'
 } finally {
     Pop-Location

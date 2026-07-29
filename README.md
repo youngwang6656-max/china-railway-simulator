@@ -82,7 +82,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1
 ```
 
-脚本离线友好地执行格式、Release/Debug 构建、152 项以上测试、75% 覆盖率门，
+脚本离线友好地执行格式、Release/Debug 构建、156 项以上测试、75% 覆盖率门，
 并真正实例化地图 UI 完成三帧 Godot 无界面冒烟。成功结尾应包含：
 
 ```text
@@ -97,6 +97,10 @@ GODOT_MANUAL_WARNING_SMOKE_OK confirmed=True
 GODOT_MANUAL_CONNECTOR_SMOKE_OK built=True
 GODOT_EDIT_TOOLS_SMOKE_OK complete=True
 GODOT_DRAWING_FEEL_SMOKE_OK complete=True
+GODOT_DRAWING_POINTER_SMOKE_OK committed=True
+GODOT_DRAWING_INVALID_PREVIEW_SMOKE_OK rejected=True
+GODOT_DRAWING_PREVIEW_IDENTITY_SMOKE_OK equal=True
+GODOT_DRAWING_DRAG_SMOKE_OK indexedSnap=True shiftFree=True duplicateRejected=True
 VERIFY_OK
 ```
 

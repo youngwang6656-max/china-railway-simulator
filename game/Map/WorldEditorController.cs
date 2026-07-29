@@ -314,6 +314,45 @@ public sealed class WorldEditorController : ISnapshotContributor
         WorldPoint point,
         double snapRadiusMeters)
     {
+        MoveWaypointResolved(
+            index,
+            SnapWaypoint(point, snapRadiusMeters));
+    }
+
+    public void MoveDrawingWaypoint(
+        int index,
+        WorldPoint point,
+        double metersPerPixel,
+        bool snappingDisabled)
+    {
+        if (!double.IsFinite(metersPerPixel) ||
+            metersPerPixel <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(metersPerPixel));
+        }
+
+        const double snapRadiusPixels = 16;
+        var candidates = _snapCandidateProvider.BuildCandidates(
+            World,
+            point,
+            DraftWaypoints,
+            metersPerPixel);
+        _drawingSession.UpdatePreview(
+            new RailSnapRequest(
+                point,
+                candidates,
+                snappingDisabled,
+                snapRadiusPixels));
+        var waypoint = _drawingSession.CurrentSnap?.Waypoint ??
+            new DraftWaypoint(point, null);
+        MoveWaypointResolved(index, waypoint);
+    }
+
+    private void MoveWaypointResolved(
+        int index,
+        DraftWaypoint waypoint)
+    {
         if (index < 0 || index >= DraftWaypoints.Length)
         {
             throw new ArgumentOutOfRangeException(nameof(index));
@@ -328,9 +367,18 @@ public sealed class WorldEditorController : ISnapshotContributor
             return;
         }
 
-        _drawingSession.MoveWaypoint(
-            index,
-            SnapWaypoint(point, snapRadiusMeters));
+        try
+        {
+            _drawingSession.MoveWaypoint(index, waypoint);
+        }
+        catch (ArgumentException)
+        {
+            _drawingSession.InvalidatePreview();
+            LastMessage = "控制点不能与相邻控制点重合";
+            Changed?.Invoke();
+            return;
+        }
+
         _drawingPreview = null;
         _confirmedDrawingDraft = null;
         _pendingWarningFingerprint = null;
@@ -407,8 +455,8 @@ public sealed class WorldEditorController : ISnapshotContributor
                 snapRadiusPixels));
         if (_drawingSession.CurrentSnap is not null &&
             (DraftWaypoints.IsEmpty ||
-             DraftWaypoints[^1].Position !=
-             _drawingSession.CurrentSnap.Waypoint.Position))
+             DraftWaypoints[^1] !=
+             _drawingSession.CurrentSnap.Waypoint))
         {
             _pendingWarningFingerprint = null;
         }
@@ -443,6 +491,12 @@ public sealed class WorldEditorController : ISnapshotContributor
                 options,
                 hints,
                 metersPerPixel);
+            if (_drawingPreview.Draft.Waypoints.SequenceEqual(
+                    DraftWaypoints))
+            {
+                _confirmedDrawingDraft = _drawingPreview.Draft;
+            }
+
             LastMessage = FormatPreviewMessage(
                 _drawingPreview.Metrics,
                 _drawingPreview.Snap);
@@ -453,6 +507,7 @@ public sealed class WorldEditorController : ISnapshotContributor
                   OverflowException)
         {
             _drawingPreview = null;
+            _drawingSession.InvalidatePreview();
             LastMessage = $"无效线路候选：{exception.Message}";
         }
 
@@ -513,8 +568,8 @@ public sealed class WorldEditorController : ISnapshotContributor
     {
         if (_drawingSession.CurrentSnap is not null &&
             (DraftWaypoints.IsEmpty ||
-             DraftWaypoints[^1].Position !=
-             _drawingSession.CurrentSnap.Waypoint.Position) &&
+             DraftWaypoints[^1] !=
+             _drawingSession.CurrentSnap.Waypoint) &&
             !ConfirmDrawingPoint().Accepted)
         {
             return CommandStatus.Rejected;

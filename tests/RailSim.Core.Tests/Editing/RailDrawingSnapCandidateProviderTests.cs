@@ -94,6 +94,64 @@ public sealed class RailDrawingSnapCandidateProviderTests
         Assert.InRange(Math.Abs(heading!.Value), 0, 0.001);
     }
 
+    [Fact]
+    public void EndpointHeadingChoosesBestAngleNotLongestSegment()
+    {
+        var empty = EmptyWorld();
+        var junctionPosition = new WorldPoint(100_000_000, 100_000_000);
+        var longDraft = new ControlPointSplineStrategy().Build(
+            ImmutableArray.Create(
+                new DraftWaypoint(junctionPosition, null),
+                new DraftWaypoint(
+                    junctionPosition.OffsetMillimeters(
+                        1_000_000_000,
+                        100_000_000),
+                    null)));
+        var longPatch = new DoubleTrackCorridorStrategy(
+                new DeterministicStableIdSource("long-angle"))
+            .CreatePatch(
+                RailTopology.Empty,
+                longDraft,
+                TrackPlacementOptions.HighSpeedDoubleTrack);
+        var longTopology = longPatch.ApplyTo(RailTopology.Empty);
+        var junction = longPatch.AddedNodes.Single(
+            node => node.Position == junctionPosition);
+        var exactDraft = new ControlPointSplineStrategy().Build(
+            ImmutableArray.Create(
+                new DraftWaypoint(
+                    junctionPosition,
+                    null,
+                    junction.Id),
+                new DraftWaypoint(
+                    junctionPosition.OffsetMillimeters(
+                        100_000_000,
+                        0),
+                    null)));
+        var exactPatch = new DoubleTrackCorridorStrategy(
+                new DeterministicStableIdSource("short-exact"))
+            .CreatePatch(
+                longTopology,
+                exactDraft,
+                TrackPlacementOptions.HighSpeedDoubleTrack);
+        var world = new WorldState(
+            1,
+            empty.BaseWorld,
+            exactPatch.ApplyTo(longTopology));
+        var provider = new RailDrawingSnapCandidateProvider();
+
+        var heading = provider.FindEndpointHeading(
+            world,
+            new DraftWaypoint(
+                junction.Position,
+                null,
+                junction.Id),
+            junction.Position.OffsetMillimeters(10_000_000, 0),
+            isStart: true);
+
+        Assert.NotNull(heading);
+        Assert.InRange(Math.Abs(heading!.Value), 0, 0.001);
+    }
+
     private static WorldState EmptyWorld()
     {
         var generated = new ProceduralWorldGenerator().Generate(

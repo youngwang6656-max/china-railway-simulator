@@ -353,7 +353,7 @@ public partial class Bootstrap : Control
             disconnectOk);
     }
 
-    private static bool RunDrawingFeelSmoke()
+    private bool RunDrawingFeelSmoke()
     {
         var commandBus = new SimulationCommandBus();
         var editor = WorldEditorController.CreateDefault(
@@ -453,6 +453,178 @@ public partial class Bootstrap : Control
                         expectedEndpoint.Value ||
                     alignment.ControlPoints[^1] ==
                         expectedEndpoint.Value);
+        editor.UpdateDrawingPreview(
+            origin,
+            metersPerPixel: 100,
+            snappingDisabled: true);
+        editor.ConfirmDrawingPoint();
+        editor.UpdateDrawingPreview(
+            second,
+            metersPerPixel: 100,
+            snappingDisabled: true);
+        editor.ConfirmDrawingPoint();
+        editor.UpdateDrawingPreview(
+            origin,
+            metersPerPixel: 100,
+            snappingDisabled: true);
+        var invalidPreviewRejected =
+            editor.DrawingPreview is null &&
+            !editor.ConfirmDrawingPoint().Accepted &&
+            editor.DraftWaypoints.Length == 2;
+        GD.Print(
+            "RAILSIM_DRAWING_INVALID_PREVIEW_SMOKE " +
+            $"rejected={invalidPreviewRejected}");
+        editor.CancelDraft();
+        editor.UpdateDrawingPreview(
+            origin,
+            metersPerPixel: 5_000,
+            snappingDisabled: true);
+        editor.ConfirmDrawingPoint();
+        editor.UpdateDrawingPreview(
+            second,
+            metersPerPixel: 5_000,
+            snappingDisabled: true);
+        editor.ConfirmDrawingPoint();
+        editor.UpdateDrawingPreview(
+            third,
+            metersPerPixel: 5_000,
+            snappingDisabled: true);
+        editor.ConfirmDrawingPoint();
+        editor.UpdateDrawingPreview(
+            third,
+            metersPerPixel: 1,
+            snappingDisabled: true);
+        var previewCommitIdentity =
+            editor.DrawingPreview is not null &&
+            editor.Draft is not null &&
+            editor.DrawingPreview.Draft.SampledPoints.SequenceEqual(
+                editor.Draft.SampledPoints);
+        GD.Print(
+            "RAILSIM_DRAWING_PREVIEW_IDENTITY_SMOKE " +
+            $"equal={previewCommitIdentity}");
+        var dragNode = editor.World.RailTopology.Nodes.Values
+            .OrderBy(node => node.Id)
+            .First(
+                node =>
+                    editor.DraftWaypoints.All(
+                        waypoint =>
+                            waypoint.Position != node.Position));
+        var nearDragNode = dragNode.Position.OffsetMillimeters(
+            500_000,
+            0);
+        editor.BeginWaypointDrag(1);
+        editor.MoveDrawingWaypoint(
+            1,
+            nearDragNode,
+            metersPerPixel: 100,
+            snappingDisabled: false);
+        var indexedDragSnap =
+            editor.DraftWaypoints[1].NodeId.HasValue;
+        editor.MoveDrawingWaypoint(
+            1,
+            nearDragNode,
+            metersPerPixel: 100,
+            snappingDisabled: true);
+        var shiftDragFree =
+            editor.DraftWaypoints[1].Position == nearDragNode &&
+            !editor.DraftWaypoints[1].NodeId.HasValue &&
+            !editor.DraftWaypoints[1].StationId.HasValue &&
+            !editor.DraftWaypoints[1].SplitTrackId.HasValue;
+        var beforeDuplicateDrag = editor.DraftWaypoints[1];
+        editor.MoveDrawingWaypoint(
+            1,
+            editor.DraftWaypoints[0].Position,
+            metersPerPixel: 100,
+            snappingDisabled: true);
+        var duplicateDragRejected =
+            editor.DraftWaypoints[1] == beforeDuplicateDrag;
+        GD.Print(
+            "RAILSIM_DRAWING_DRAG_SMOKE " +
+            $"indexedSnap={indexedDragSnap} " +
+            $"shiftFree={shiftDragFree} " +
+            $"duplicateRejected={duplicateDragRejected}");
+        editor.CancelWaypointDrag();
+        editor.CancelDraft();
+        var pointerCommandBus = new SimulationCommandBus();
+        var pointerEditor = WorldEditorController.CreateDefault(
+            20260731,
+            ProjectSettings.GlobalizePath(
+                "res://../.tools/drawing-pointer-smoke-world.crsim-world.json"),
+            pointerCommandBus);
+        var pointerStore = new SnapshotStore();
+        var pointerHost = new SimulationHost(
+            new SimulationClock(),
+            pointerCommandBus,
+            Array.Empty<ISimulationSystem>(),
+            pointerStore,
+            [pointerEditor]);
+        pointerEditor.AttachQuery(pointerStore);
+        pointerEditor.AttachHost(pointerHost);
+        pointerEditor.SetTool(WorldEditorTool.DrawDoubleTrack);
+        var pointerView = new WorldMapView
+        {
+            Size = new Vector2(1_000, 500)
+        };
+        AddChild(pointerView);
+        pointerView.Initialize(pointerEditor);
+        var pointerRevision = pointerEditor.World.Revision;
+        var pointerPoints = new[]
+        {
+            new Vector2(400, 250),
+            new Vector2(450, 250),
+            new Vector2(500, 250)
+        };
+        foreach (var pointerPoint in pointerPoints)
+        {
+            pointerView._GuiInput(
+                new InputEventMouseButton
+                {
+                    ButtonIndex = MouseButton.Left,
+                    Pressed = true,
+                    Position = pointerPoint,
+                    ShiftPressed = true
+                });
+            pointerView._GuiInput(
+                new InputEventMouseButton
+                {
+                    ButtonIndex = MouseButton.Left,
+                    Pressed = false,
+                    Position = pointerPoint,
+                    ShiftPressed = true
+                });
+        }
+
+        pointerView._GuiInput(
+            new InputEventMouseButton
+            {
+                ButtonIndex = MouseButton.Left,
+                DoubleClick = true,
+                Pressed = true,
+                Position = pointerPoints[^1],
+                ShiftPressed = true
+            });
+        if (pointerEditor.DrawingState ==
+            RailSim.Core.Editing.RailDrawingState.ConfirmingWarning)
+        {
+            pointerView._GuiInput(
+                new InputEventMouseButton
+                {
+                    ButtonIndex = MouseButton.Left,
+                    DoubleClick = true,
+                    Pressed = true,
+                    Position = pointerPoints[^1],
+                    ShiftPressed = true
+                });
+        }
+
+        var doubleClickCommitted =
+            pointerEditor.World.Revision > pointerRevision &&
+            pointerEditor.DraftWaypoints.IsEmpty;
+        GD.Print(
+            "RAILSIM_DRAWING_POINTER_SMOKE " +
+            $"committed={doubleClickCommitted}");
+        pointerView.QueueFree();
+
         return
             originConfirmed &&
             livePreviewOk &&
@@ -463,6 +635,12 @@ public partial class Bootstrap : Control
             shiftFree &&
             commit == CommandStatus.Accepted &&
             endpointIncluded &&
+            invalidPreviewRejected &&
+            previewCommitIdentity &&
+            indexedDragSnap &&
+            shiftDragFree &&
+            duplicateDragRejected &&
+            doubleClickCommitted &&
             editor.CurrentTool == WorldEditorTool.DrawDoubleTrack &&
             editor.DraftWaypoints.IsEmpty &&
             editor.DrawingState ==

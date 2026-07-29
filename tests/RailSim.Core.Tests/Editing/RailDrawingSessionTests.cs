@@ -50,6 +50,28 @@ public sealed class RailDrawingSessionTests
     }
 
     [Fact]
+    public void SamePositionCandidateCanRebindAStaleSnapTarget()
+    {
+        var session = NewSession();
+        session.Load(
+            ImmutableArray.Create(
+                Waypoint(0, 0),
+                new DraftWaypoint(
+                    Point(100, 0),
+                    null,
+                    SplitTrackId: new StableId("removed-track"))));
+        session.UpdatePreview(FreeRequest(100, 0));
+
+        Assert.Equal(2, session.PreviewWaypoints.Length);
+        Assert.Null(session.PreviewWaypoints[^1].SplitTrackId);
+        var result = session.ConfirmPreviewPoint();
+
+        Assert.True(result.Accepted);
+        Assert.Null(session.ConfirmedWaypoints[^1].SplitTrackId);
+        Assert.Equal(Point(100, 0), session.ConfirmedWaypoints[^1].Position);
+    }
+
+    [Fact]
     public void RightClickStepBackRemovesOnePointThenCancelsOrigin()
     {
         var session = SessionWithConfirmedPoints(
@@ -80,6 +102,22 @@ public sealed class RailDrawingSessionTests
 
         Assert.Equal(Point(100, 0), session.ConfirmedWaypoints[1].Position);
         Assert.Equal(RailDrawingState.Previewing, session.State);
+    }
+
+    [Fact]
+    public void DragCannotCollapseWaypointOntoItsNeighbor()
+    {
+        var session = SessionWithConfirmedPoints(
+            Point(0, 0),
+            Point(100, 0),
+            Point(200, 0));
+        session.BeginWaypointDrag(1);
+
+        Assert.Throws<ArgumentException>(
+            () => session.MoveWaypoint(1, Waypoint(0, 0)));
+        Assert.Equal(
+            Point(100, 0),
+            session.ConfirmedWaypoints[1].Position);
     }
 
     [Fact]
