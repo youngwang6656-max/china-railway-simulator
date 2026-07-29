@@ -205,6 +205,9 @@ try {
     if ($smokeOutput -notmatch 'RAILSIM_EDIT_TOOLS_SMOKE complete=True') {
         throw "Godot edit tools smoke marker missing.`n$smokeOutput"
     }
+    if ($smokeOutput -notmatch 'RAILSIM_DRAWING_FEEL_SMOKE complete=True') {
+        throw "Godot drawing feel smoke marker missing.`n$smokeOutput"
+    }
 
     Write-Host "TOOLCHAIN_OK dotnet=$dotnetVersion godot=$godotVersion"
     Write-Host "TESTS_OK total=$totalTests passed=$passedTests failed=$failedTests"
@@ -222,6 +225,7 @@ try {
     Write-Host 'GODOT_MANUAL_WARNING_SMOKE_OK confirmed=True'
     Write-Host 'GODOT_MANUAL_CONNECTOR_SMOKE_OK built=True'
     Write-Host 'GODOT_EDIT_TOOLS_SMOKE_OK complete=True'
+    Write-Host 'GODOT_DRAWING_FEEL_SMOKE_OK complete=True'
     Write-Host 'VERIFY_OK'
 } finally {
     Pop-Location

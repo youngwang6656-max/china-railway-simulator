@@ -24,6 +24,9 @@ public partial class WorldMapView : Control
     private Vector2 _boxEnd;
     private int _draggedWaypoint = -1;
     private int _selectedWaypoint = -1;
+    private Vector2 _latestPointer;
+    private bool _previewDirty;
+    private bool _snappingDisabled;
 
     public double MetersPerPixel => _metersPerPixel;
 
@@ -32,6 +35,23 @@ public partial class WorldMapView : Control
         MouseFilter = MouseFilterEnum.Stop;
         FocusMode = FocusModeEnum.All;
         ClipContents = true;
+    }
+
+    public override void _Process(double delta)
+    {
+        _ = delta;
+        if (!_initialized ||
+            !_previewDirty ||
+            !IsContinuousDrawingTool())
+        {
+            return;
+        }
+
+        _previewDirty = false;
+        _controller.UpdateDrawingPreview(
+            ScreenToWorld(_latestPointer),
+            _metersPerPixel,
+            _snappingDisabled);
     }
 
     public override void _ExitTree()
@@ -118,7 +138,7 @@ public partial class WorldMapView : Control
             case InputEventMouseMotion motion:
                 HandleMouseMotion(motion);
                 break;
-            case InputEventKey key when key.Pressed && !key.Echo:
+            case InputEventKey key when !key.Echo:
                 HandleKey(key);
                 break;
         }
@@ -136,6 +156,20 @@ public partial class WorldMapView : Control
         if (mouse.ButtonIndex == MouseButton.WheelDown && mouse.Pressed)
         {
             ZoomAt(mouse.Position, 1.22);
+            AcceptEvent();
+            return;
+        }
+
+        if (mouse.ButtonIndex == MouseButton.Right &&
+            mouse.Pressed &&
+            IsContinuousDrawingTool() &&
+            _controller.DrawingState !=
+            RailSim.Core.Editing.RailDrawingState.Idle)
+        {
+            _controller.UndoDrawingStep();
+            _selectedWaypoint = Math.Min(
+                _selectedWaypoint,
+                _controller.DraftWaypoints.Length - 1);
             AcceptEvent();
             return;
         }
@@ -163,7 +197,12 @@ public partial class WorldMapView : Control
                 AcceptEvent();
             }
 
-            _draggedWaypoint = -1;
+            if (_draggedWaypoint >= 0)
+            {
+                _controller.FinishWaypointDrag();
+                _draggedWaypoint = -1;
+            }
+
             return;
         }
 
@@ -207,6 +246,40 @@ public partial class WorldMapView : Control
             return;
         }
 
+        if (IsContinuousDrawingTool())
+        {
+            _latestPointer = mouse.Position;
+            _snappingDisabled = mouse.ShiftPressed;
+            _previewDirty = false;
+            _controller.UpdateDrawingPreview(
+                ScreenToWorld(mouse.Position),
+                _metersPerPixel,
+                _snappingDisabled);
+            _draggedWaypoint = HitDraftWaypoint(mouse.Position);
+            _selectedWaypoint = _draggedWaypoint;
+            if (_draggedWaypoint >= 0)
+            {
+                _controller.BeginWaypointDrag(_draggedWaypoint);
+            }
+            else if (mouse.DoubleClick)
+            {
+                _controller.CommitDrawingAtPreview();
+                _selectedWaypoint = -1;
+            }
+            else
+            {
+                var result = _controller.ConfirmDrawingPoint();
+                if (result.Accepted)
+                {
+                    _selectedWaypoint =
+                        _controller.DraftWaypoints.Length - 1;
+                }
+            }
+
+            AcceptEvent();
+            return;
+        }
+
         if (mouse.DoubleClick)
         {
             _controller.CommitDraft();
@@ -234,6 +307,8 @@ public partial class WorldMapView : Control
             _centerXMillimeters -= delta.X * _metersPerPixel * 1000d;
             _centerYMillimeters -= delta.Y * _metersPerPixel * 1000d;
             _lastPointer = motion.Position;
+            _latestPointer = motion.Position;
+            _previewDirty = IsContinuousDrawingTool();
             QueueRedraw();
             AcceptEvent();
             return;
@@ -255,11 +330,33 @@ public partial class WorldMapView : Control
                 ScreenToWorld(motion.Position),
                 _metersPerPixel * 15);
             AcceptEvent();
+            return;
+        }
+
+        if (IsContinuousDrawingTool())
+        {
+            _latestPointer = motion.Position;
+            _snappingDisabled = motion.ShiftPressed;
+            _previewDirty = true;
+            AcceptEvent();
         }
     }
 
     private void HandleKey(InputEventKey key)
     {
+        if (key.Keycode == Key.Shift)
+        {
+            _snappingDisabled = key.Pressed;
+            _previewDirty = true;
+            AcceptEvent();
+            return;
+        }
+
+        if (!key.Pressed)
+        {
+            return;
+        }
+
         if (key.Keycode is Key.Enter or Key.KpEnter)
         {
             _controller.CommitDraft();
@@ -267,7 +364,16 @@ public partial class WorldMapView : Control
         }
         else if (key.Keycode == Key.Escape)
         {
-            _controller.CancelDraft();
+            if (_draggedWaypoint >= 0)
+            {
+                _controller.CancelWaypointDrag();
+                _draggedWaypoint = -1;
+            }
+            else
+            {
+                _controller.CancelDraft();
+            }
+
             _selectedWaypoint = -1;
             AcceptEvent();
         }
@@ -308,6 +414,8 @@ public partial class WorldMapView : Control
             before.XMillimeters - after.XMillimeters;
         _centerYMillimeters +=
             before.YMillimeters - after.YMillimeters;
+        _latestPointer = pointer;
+        _previewDirty = IsContinuousDrawingTool();
         QueueRedraw();
     }
 
@@ -565,8 +673,61 @@ public partial class WorldMapView : Control
 
     private void DrawDraft()
     {
-        var draft = _controller.Draft;
-        if (draft is not null)
+        var preview = _controller.DrawingPreview;
+        if (preview is not null)
+        {
+            var center = preview.Draft.SampledPoints
+                .Select(WorldToScreen)
+                .ToArray();
+            var up = preview.UpTrackPoints
+                .Select(WorldToScreen)
+                .ToArray();
+            var down = preview.DownTrackPoints
+                .Select(WorldToScreen)
+                .ToArray();
+            DrawPolyline(
+                up,
+                new Color(0.2f, 0.9f, 1f, 0.52f),
+                2.6f,
+                true);
+            DrawPolyline(
+                down,
+                new Color(0.2f, 0.9f, 1f, 0.52f),
+                2.6f,
+                true);
+            DrawDashedPolyline(
+                center,
+                new Color(1f, 0.88f, 0.25f, 0.8f),
+                1.4f);
+
+            var waypointSegments =
+                preview.Draft.Waypoints.Length - 1;
+            var samplesPerSegment = waypointSegments > 0
+                ? (center.Length - 1) / waypointSegments
+                : 0;
+            var confirmedPointCount = Math.Min(
+                center.Length,
+                Math.Max(
+                    0,
+                    ((_controller.DraftWaypoints.Length - 1) *
+                     samplesPerSegment) + 1));
+            if (confirmedPointCount >= 2)
+            {
+                DrawPolyline(
+                    up[..confirmedPointCount],
+                    new Color(0.18f, 0.94f, 1f, 0.96f),
+                    3.2f,
+                    true);
+                DrawPolyline(
+                    down[..confirmedPointCount],
+                    new Color(0.18f, 0.94f, 1f, 0.96f),
+                    3.2f,
+                    true);
+            }
+
+            DrawSnapFeedback(preview);
+        }
+        else if (_controller.Draft is { } draft)
         {
             DrawPolyline(
                 draft.SampledPoints.Select(WorldToScreen).ToArray(),
@@ -587,6 +748,97 @@ public partial class WorldMapView : Control
                 true,
                 -1,
                 true);
+        }
+    }
+
+    private void DrawSnapFeedback(RailSim.Core.Editing.RailDrawingPreview preview)
+    {
+        var snap = preview.Snap;
+        var position = WorldToScreen(snap.Waypoint.Position);
+        if (snap.Kind == RailSim.Core.Editing.RailSnapKind.Free)
+        {
+            DrawLine(
+                position + new Vector2(-6, 0),
+                position + new Vector2(6, 0),
+                Colors.White,
+                1.5f,
+                true);
+            DrawLine(
+                position + new Vector2(0, -6),
+                position + new Vector2(0, 6),
+                Colors.White,
+                1.5f,
+                true);
+        }
+        else
+        {
+            DrawArc(
+                position,
+                9,
+                0,
+                MathF.Tau,
+                32,
+                new Color(0.25f, 0.78f, 1f),
+                2.2f,
+                true);
+        }
+
+        var snapLabel = snap.Kind switch
+        {
+            RailSim.Core.Editing.RailSnapKind.RailNode => "节点",
+            RailSim.Core.Editing.RailSnapKind.Station => "车站",
+            RailSim.Core.Editing.RailSnapKind.TrackSplit => "接入轨道",
+            RailSim.Core.Editing.RailSnapKind.AngleGuide =>
+                $"{snap.GuideAngleDegrees:+0;-0;0}°",
+            _ => "自由"
+        };
+        DrawString(
+            ThemeDB.FallbackFont,
+            position + new Vector2(12, -10),
+            snapLabel,
+            HorizontalAlignment.Left,
+            -1,
+            13,
+            new Color(0.82f, 0.94f, 1f));
+
+        var metrics = preview.Metrics;
+        var radius = metrics.MinimumRadiusMeters.HasValue
+            ? $"R {metrics.MinimumRadiusMeters.Value:N0}m"
+            : "R ∞";
+        var metricText =
+            $"本段 {metrics.CurrentSegmentLengthMillimeters / 1_000_000d:N1}km  " +
+            $"总长 {metrics.TotalLengthMillimeters / 1_000_000d:N1}km  " +
+            $"{radius}  预计 {metrics.EstimatedSpeedKph}km/h  " +
+            "纵断面待详细设计";
+        var labelPosition = new Vector2(
+            Math.Clamp(_latestPointer.X + 18, 12, Size.X - 420),
+            Math.Clamp(_latestPointer.Y + 28, 24, Size.Y - 14));
+        DrawString(
+            ThemeDB.FallbackFont,
+            labelPosition,
+            metricText,
+            HorizontalAlignment.Left,
+            -1,
+            13,
+            new Color(1f, 0.92f, 0.55f));
+    }
+
+    private void DrawDashedPolyline(
+        Vector2[] points,
+        Color color,
+        float width)
+    {
+        for (var index = 0; index < points.Length - 1; index++)
+        {
+            if (index % 2 == 0)
+            {
+                DrawLine(
+                    points[index],
+                    points[index + 1],
+                    color,
+                    width,
+                    true);
+            }
         }
     }
 
@@ -705,6 +957,13 @@ public partial class WorldMapView : Control
         }
 
         return -1;
+    }
+
+    private bool IsContinuousDrawingTool()
+    {
+        return _controller.CurrentTool is
+            WorldEditorTool.DrawDoubleTrack or
+            WorldEditorTool.DrawConnector;
     }
 
     private void HandleControllerChanged()

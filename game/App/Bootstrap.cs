@@ -23,6 +23,7 @@ public partial class Bootstrap : Control
     private bool _smokeManualWarningOk;
     private bool _smokeManualConnectorOk;
     private bool _smokeEditToolsOk;
+    private bool _smokeDrawingFeelOk;
     private long _smokeStartTick;
     private int _smokeFrames;
     private SimulationRate _rate =
@@ -95,6 +96,7 @@ public partial class Bootstrap : Control
                 _smokeManualConnectorOk,
                 _smokeEditToolsOk) =
                 RunManualToolSmoke();
+            _smokeDrawingFeelOk = RunDrawingFeelSmoke();
             BuildWorkspace();
             UpdateStatus();
             _smokePending = true;
@@ -152,6 +154,7 @@ public partial class Bootstrap : Control
             _smokeManualWarningOk &&
             _smokeManualConnectorOk &&
             _smokeEditToolsOk &&
+            _smokeDrawingFeelOk &&
             snapshotOk;
         GD.Print(
             $"RAILSIM_WORLD_SMOKE cities={world.BaseWorld.Cities.Count} " +
@@ -165,6 +168,8 @@ public partial class Bootstrap : Control
         GD.Print($"RAILSIM_MANUAL_WARNING_SMOKE confirmed={_smokeManualWarningOk}");
         GD.Print($"RAILSIM_MANUAL_CONNECTOR_SMOKE built={_smokeManualConnectorOk}");
         GD.Print($"RAILSIM_EDIT_TOOLS_SMOKE complete={_smokeEditToolsOk}");
+        GD.Print(
+            $"RAILSIM_DRAWING_FEEL_SMOKE complete={_smokeDrawingFeelOk}");
         GetTree().Quit(success ? 0 : 1);
     }
 
@@ -348,6 +353,122 @@ public partial class Bootstrap : Control
             disconnectOk);
     }
 
+    private static bool RunDrawingFeelSmoke()
+    {
+        var commandBus = new SimulationCommandBus();
+        var editor = WorldEditorController.CreateDefault(
+            20260730,
+            ProjectSettings.GlobalizePath(
+                "res://../.tools/drawing-smoke-world.crsim-world.json"),
+            commandBus);
+        var store = new SnapshotStore();
+        var host = new SimulationHost(
+            new SimulationClock(),
+            commandBus,
+            Array.Empty<ISimulationSystem>(),
+            store,
+            [editor]);
+        editor.AttachQuery(store);
+        editor.AttachHost(host);
+        editor.BuildDemoMainLine();
+        editor.SetTool(WorldEditorTool.DrawDoubleTrack);
+        var unchangedRevision = editor.World.Revision;
+        var origin = new WorldPoint(
+            120_000_000,
+            110_000_000);
+        var second = new WorldPoint(
+            145_000_000,
+            114_000_000);
+        var third = new WorldPoint(
+            170_000_000,
+            125_000_000);
+        editor.UpdateDrawingPreview(
+            origin,
+            metersPerPixel: 100,
+            snappingDisabled: true);
+        var originConfirmed =
+            editor.ConfirmDrawingPoint().Accepted;
+        editor.UpdateDrawingPreview(
+            second,
+            metersPerPixel: 100,
+            snappingDisabled: true);
+        var preview = editor.DrawingPreview;
+        var livePreviewOk =
+            editor.World.Revision == unchangedRevision &&
+            preview is not null &&
+            preview.UpTrackPoints.Length ==
+            preview.Draft.SampledPoints.Length &&
+            preview.DownTrackPoints.Length ==
+            preview.Draft.SampledPoints.Length &&
+            preview.UpTrackPoints[1] !=
+            preview.DownTrackPoints[1];
+        var secondConfirmed =
+            editor.ConfirmDrawingPoint().Accepted;
+        editor.UpdateDrawingPreview(
+            third,
+            metersPerPixel: 100,
+            snappingDisabled: true);
+        var thirdConfirmed =
+            editor.ConfirmDrawingPoint().Accepted;
+        var stepBackOk =
+            editor.DraftWaypoints.Length == 3 &&
+            editor.UndoDrawingStep() ==
+            RailSim.Core.Editing.RailDrawingUndoResult.PointRemoved &&
+            editor.DraftWaypoints.Length == 2;
+
+        var node = editor.World.RailTopology.Nodes.Values
+            .OrderBy(item => item.Id)
+            .First();
+        var nearNode = node.Position.OffsetMillimeters(
+            500_000,
+            0);
+        editor.UpdateDrawingPreview(
+            nearNode,
+            metersPerPixel: 100,
+            snappingDisabled: false);
+        var snappedToNode =
+            editor.CurrentSnap?.Kind ==
+            RailSim.Core.Editing.RailSnapKind.RailNode;
+        editor.UpdateDrawingPreview(
+            nearNode,
+            metersPerPixel: 100,
+            snappingDisabled: true);
+        var shiftFree =
+            editor.CurrentSnap?.Kind ==
+            RailSim.Core.Editing.RailSnapKind.Free &&
+            editor.CurrentSnap.Waypoint.Position == nearNode;
+        var expectedEndpoint =
+            editor.CurrentSnap?.Waypoint.Position;
+        var commit = editor.CommitDrawingAtPreview();
+        if (commit == CommandStatus.Rejected)
+        {
+            commit = editor.CommitDraft();
+        }
+
+        var endpointIncluded =
+            expectedEndpoint.HasValue &&
+            editor.World.RailTopology.Alignments.Values.Any(
+                alignment =>
+                    alignment.ControlPoints[0] ==
+                        expectedEndpoint.Value ||
+                    alignment.ControlPoints[^1] ==
+                        expectedEndpoint.Value);
+        return
+            originConfirmed &&
+            livePreviewOk &&
+            secondConfirmed &&
+            thirdConfirmed &&
+            stepBackOk &&
+            snappedToNode &&
+            shiftFree &&
+            commit == CommandStatus.Accepted &&
+            endpointIncluded &&
+            editor.CurrentTool == WorldEditorTool.DrawDoubleTrack &&
+            editor.DraftWaypoints.IsEmpty &&
+            editor.DrawingState ==
+            RailSim.Core.Editing.RailDrawingState.Idle;
+    }
+
     private void BuildWorkspace()
     {
         var layout = new VBoxContainer
@@ -426,7 +547,7 @@ public partial class Bootstrap : Control
 
         var hint = new Label
         {
-            Text = "滚轮缩放｜中/右键平移｜改线端点锁定｜拆分后可接联络线",
+            Text = "左键确认｜右键退点｜中键平移｜Shift 关闭吸附｜Enter 完成",
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             VerticalAlignment = VerticalAlignment.Center
         };

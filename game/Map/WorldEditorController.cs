@@ -184,7 +184,7 @@ public sealed class WorldEditorController : ISnapshotContributor
         LastMessage = tool switch
         {
             WorldEditorTool.DrawDoubleTrack =>
-                "双线工具：左键布点，Enter 或双击提交，Esc 取消",
+                "双线：移动预览，左键确认，右键退点，Shift 关闭吸附",
             WorldEditorTool.DrawConnector =>
                 "联络线工具：依次选择两个既有节点，Enter 或双击提交",
             WorldEditorTool.RealignTrack =>
@@ -405,7 +405,13 @@ public sealed class WorldEditorController : ISnapshotContributor
                 candidates,
                 snappingDisabled,
                 snapRadiusPixels));
-        _pendingWarningFingerprint = null;
+        if (_drawingSession.CurrentSnap is not null &&
+            (DraftWaypoints.IsEmpty ||
+             DraftWaypoints[^1].Position !=
+             _drawingSession.CurrentSnap.Waypoint.Position))
+        {
+            _pendingWarningFingerprint = null;
+        }
         if (_drawingSession.PreviewWaypoints.Length < 2 ||
             _drawingSession.CurrentSnap is null)
         {
@@ -506,6 +512,9 @@ public sealed class WorldEditorController : ISnapshotContributor
     public CommandStatus CommitDrawingAtPreview()
     {
         if (_drawingSession.CurrentSnap is not null &&
+            (DraftWaypoints.IsEmpty ||
+             DraftWaypoints[^1].Position !=
+             _drawingSession.CurrentSnap.Waypoint.Position) &&
             !ConfirmDrawingPoint().Accepted)
         {
             return CommandStatus.Rejected;
@@ -517,6 +526,8 @@ public sealed class WorldEditorController : ISnapshotContributor
     public void BeginWaypointDrag(int index)
     {
         _drawingSession.BeginWaypointDrag(index);
+        _drawingPreview = null;
+        _confirmedDrawingDraft = null;
     }
 
     public void FinishWaypointDrag()
@@ -1444,7 +1455,9 @@ public sealed class WorldEditorController : ISnapshotContributor
                 waypoint =>
                     $"{waypoint.Position.XMillimeters}," +
                     $"{waypoint.Position.YMillimeters}," +
-                    $"{waypoint.StationId?.Value}"));
+                    $"{waypoint.StationId?.Value}," +
+                    $"{waypoint.NodeId?.Value}," +
+                    $"{waypoint.SplitTrackId?.Value}"));
     }
 
     private ImmutableArray<StationAnchor> DemoMainStations()
