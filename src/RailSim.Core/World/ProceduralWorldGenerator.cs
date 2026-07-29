@@ -74,13 +74,16 @@ public sealed class ProceduralWorldGenerator :
             cities,
             stations,
             string.Empty);
-        return new GeneratedWorld(
+        var generated = new GeneratedWorld(
             parameters,
             terrain,
             rivers,
             cities,
             stations,
             WorldContentHasher.HashGeneratedWorld(withoutHash));
+        WorldStateValidator.Validate(
+            new WorldState(0, generated, Rail.RailTopology.Empty));
+        return generated;
     }
 
     public HeightField GenerateTerrain(

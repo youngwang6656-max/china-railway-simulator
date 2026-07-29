@@ -19,6 +19,9 @@ public partial class Bootstrap : Control
     private bool _smokeHistoryOk;
     private bool _smokePersistenceOk;
     private bool _smokeHostCommandOk;
+    private bool _smokeReplacementOk;
+    private bool _smokeManualWarningOk;
+    private bool _smokeManualConnectorOk;
     private long _smokeStartTick;
     private int _smokeFrames;
     private SimulationRate _rate =
@@ -75,12 +78,19 @@ public partial class Bootstrap : Control
             var expectedHash = WorldContentHasher.HashState(_editor.World);
             _editor.Save();
             _editor.NewWorld(_editor.Seed + 1);
+            var newWorldDisplayOk =
+                ReferenceEquals(_editor.DisplayWorld, _editor.World);
             _editor.Load();
             _smokePersistenceOk =
                 string.Equals(
                     expectedHash,
                     WorldContentHasher.HashState(_editor.World),
                     StringComparison.Ordinal);
+            _smokeReplacementOk =
+                newWorldDisplayOk &&
+                ReferenceEquals(_editor.DisplayWorld, _editor.World);
+            (_smokeManualWarningOk, _smokeManualConnectorOk) =
+                RunManualToolSmoke();
             BuildWorkspace();
             UpdateStatus();
             _smokePending = true;
@@ -135,6 +145,9 @@ public partial class Bootstrap : Control
             _smokeHistoryOk &&
             _smokePersistenceOk &&
             _smokeHostCommandOk &&
+            _smokeReplacementOk &&
+            _smokeManualWarningOk &&
+            _smokeManualConnectorOk &&
             snapshotOk;
         GD.Print(
             $"RAILSIM_WORLD_SMOKE cities={world.BaseWorld.Cities.Count} " +
@@ -144,7 +157,69 @@ public partial class Bootstrap : Control
         GD.Print($"RAILSIM_SNAPSHOT_SMOKE published={snapshotOk}");
         GD.Print($"RAILSIM_PERSISTENCE_SMOKE roundtrip={_smokePersistenceOk}");
         GD.Print($"RAILSIM_HOST_COMMAND_SMOKE dispatched={_smokeHostCommandOk}");
+        GD.Print($"RAILSIM_REPLACEMENT_SMOKE current={_smokeReplacementOk}");
+        GD.Print($"RAILSIM_MANUAL_WARNING_SMOKE confirmed={_smokeManualWarningOk}");
+        GD.Print($"RAILSIM_MANUAL_CONNECTOR_SMOKE built={_smokeManualConnectorOk}");
         GetTree().Quit(success ? 0 : 1);
+    }
+
+    private static (bool Warning, bool Connector) RunManualToolSmoke()
+    {
+        var editor = WorldEditorController.CreateDefault(
+            20260729,
+            ProjectSettings.GlobalizePath(
+                "res://../.tools/manual-smoke-world.crsim-world.json"),
+            new SimulationCommandBus());
+        editor.BuildDemoMainLine();
+        editor.BuildDemoSecondLine();
+        editor.SetTool(WorldEditorTool.DrawDoubleTrack);
+        editor.AddWaypoint(
+            new WorldPoint(100_000_000, 100_000_000),
+            snapRadiusMeters: 1);
+        editor.AddWaypoint(
+            new WorldPoint(100_100_000, 100_000_000),
+            snapRadiusMeters: 1);
+        editor.AddWaypoint(
+            new WorldPoint(100_100_000, 100_100_000),
+            snapRadiusMeters: 1);
+        var warningFirst = editor.CommitDraft();
+        var warningSecond = editor.CommitDraft();
+        var warningOk =
+            warningFirst == CommandStatus.Rejected &&
+            warningSecond == CommandStatus.Accepted;
+
+        var connectorNodes = editor.World.RailTopology.Nodes.Values
+            .Where(
+                node =>
+                    node.Kind ==
+                    RailSim.Core.Rail.RailNodeKind.StationBoundary &&
+                    node.StationId.HasValue)
+            .OrderBy(node => node.Id)
+            .Take(2)
+            .ToArray();
+        if (connectorNodes.Length < 2)
+        {
+            return (warningOk, false);
+        }
+
+        editor.SetTool(WorldEditorTool.DrawConnector);
+        editor.AddWaypoint(connectorNodes[0].Position, snapRadiusMeters: 1);
+        editor.AddWaypoint(connectorNodes[1].Position, snapRadiusMeters: 1);
+        editor.CycleConnectorMovementPlan();
+        var tracksBefore = editor.World.RailTopology.Tracks.Count;
+        var connectionsBefore = editor.World.RailTopology.Connections.Count;
+        var connectorResult = editor.CommitDraft();
+        if (connectorResult == CommandStatus.Rejected)
+        {
+            connectorResult = editor.CommitDraft();
+        }
+
+        var connectorOk =
+            connectorResult == CommandStatus.Accepted &&
+            editor.World.RailTopology.Tracks.Count == tracksBefore + 2 &&
+            editor.World.RailTopology.Connections.Count >=
+            connectionsBefore + 4;
+        return (warningOk, connectorOk);
     }
 
     private void BuildWorkspace()

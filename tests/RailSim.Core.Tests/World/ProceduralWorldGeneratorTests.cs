@@ -179,6 +179,20 @@ public sealed class ProceduralWorldGeneratorTests
         Assert.Equal(64, world.Cities.Count);
     }
 
+    [Fact]
+    public void GeneratorRejectsInvalidReplacementTerrain()
+    {
+        var defaults = new ProceduralWorldGenerator();
+        var generator = new ProceduralWorldGenerator(
+            new WrongSizeTerrainGenerator(),
+            defaults,
+            defaults);
+
+        Assert.Throws<InvalidDataException>(
+            () => generator.Generate(
+                WorldGenerationParameters.CreateRegional(88)));
+    }
+
     private sealed class CountingTerrainGenerator(
         ITerrainGenerator inner) : ITerrainGenerator
     {
@@ -225,6 +239,23 @@ public sealed class ProceduralWorldGeneratorTests
         {
             CallCount++;
             return inner.GenerateCityNames(count, nameSeed);
+        }
+    }
+
+    private sealed class WrongSizeTerrainGenerator : ITerrainGenerator
+    {
+        public HeightField GenerateTerrain(
+            WorldGenerationParameters parameters,
+            ulong terrainSeed)
+        {
+            return new HeightField(
+                parameters.HeightSamplesX - 1,
+                parameters.HeightSamplesY,
+                Enumerable.Repeat(
+                    100,
+                    checked(
+                        (parameters.HeightSamplesX - 1) *
+                        parameters.HeightSamplesY)));
         }
     }
 }

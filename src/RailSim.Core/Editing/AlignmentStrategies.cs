@@ -203,15 +203,10 @@ public sealed class DoubleTrackCorridorStrategy : ITrackPlacementStrategy
         return new RailGraphPatch
         {
             Intent = RailEditIntent.DoubleTrackCorridor,
-            AffectedChunks = draft.SampledPoints
-                .Select(
-                    point => WorldChunkId.FromPoint(
-                        point,
-                        options.ChunkSizeMeters))
-                .Distinct()
-                .OrderBy(chunk => chunk.X)
-                .ThenBy(chunk => chunk.Y)
-                .ToImmutableArray(),
+            AffectedChunks = WorldChunkCoverage.TracePolyline(
+                draft.SampledPoints,
+                options.ChunkSizeMeters,
+                paddingMillimeters: options.TrackSpacingMillimeters / 2L),
             AddedNodes = addedNodes.ToImmutable(),
             AddedPorts = addedPorts.ToImmutable(),
             AddedAlignments = addedAlignments.ToImmutable(),

@@ -100,7 +100,7 @@ public sealed class WorldEditorSessionTests
         Assert.Single(results);
         Assert.Equal(CommandStatus.Accepted, results[0].Status);
         Assert.Equal("world", section.Key);
-        Assert.Equal(6, section.World.RailTopology.Tracks.Count);
+        Assert.Equal(2, section.World.RailTopology.Tracks.Count);
     }
 
     [Fact]
@@ -121,7 +121,7 @@ public sealed class WorldEditorSessionTests
 
         Assert.Equal(CommandStatus.Accepted, result.Status);
         Assert.Empty(first.World.RailTopology.Tracks);
-        Assert.Equal(6, active.World.RailTopology.Tracks.Count);
+        Assert.Equal(2, active.World.RailTopology.Tracks.Count);
     }
 
     [Fact]
@@ -130,8 +130,8 @@ public sealed class WorldEditorSessionTests
         var session = CreateSession();
         var draft = new ControlPointSplineStrategy().Build(
             ImmutableArray.Create(
-                Waypoint(0, 0, "station:a"),
-                Waypoint(100, 0, "station:b")));
+                Waypoint(0, 0, null),
+                Waypoint(100, 0, null)));
         var patch = new DoubleTrackCorridorStrategy(
             new DeterministicStableIdSource("warning"))
             .CreatePatch(
@@ -152,6 +152,31 @@ public sealed class WorldEditorSessionTests
         Assert.Equal(CommandStatus.Accepted, accepted.Status);
     }
 
+    [Fact]
+    public void OutOfBoundsPatchIsRejectedWithoutChangingHistory()
+    {
+        var session = CreateSession();
+        var draft = new ControlPointSplineStrategy().Build(
+        [
+            Waypoint(900, 100, null),
+            Waypoint(1_100, 100, null)
+        ]);
+        var patch = new DoubleTrackCorridorStrategy(
+            new DeterministicStableIdSource("out-of-bounds"))
+            .CreatePatch(
+                RailTopology.Empty,
+                draft,
+                TrackPlacementOptions.HighSpeedDoubleTrack);
+        var before = session.CurrentHash;
+
+        var result = session.Apply(patch, session.Revision);
+
+        Assert.Equal(CommandStatus.Rejected, result.Status);
+        Assert.Equal("world.state.invalid", result.Code);
+        Assert.Equal(before, session.CurrentHash);
+        Assert.False(session.CanUndo);
+    }
+
     private static WorldEditorSession CreateSession()
     {
         var generated = new ProceduralWorldGenerator().Generate(
@@ -165,10 +190,10 @@ public sealed class WorldEditorSessionTests
     {
         var draft = new ControlPointSplineStrategy().Build(
             ImmutableArray.Create(
-                Waypoint(0, 0, "station:a"),
-                Waypoint(120, 70, "station:c"),
-                Waypoint(250, 40, "station:d"),
-                Waypoint(400, 120, "station:b")));
+                Waypoint(0, 0, null),
+                Waypoint(120, 70, null),
+                Waypoint(250, 40, null),
+                Waypoint(400, 120, null)));
         return new DoubleTrackCorridorStrategy(
             new DeterministicStableIdSource(scope))
             .CreatePatch(
@@ -180,12 +205,12 @@ public sealed class WorldEditorSessionTests
     private static DraftWaypoint Waypoint(
         long xKilometers,
         long yKilometers,
-        string stationId)
+        string? stationId)
     {
         return new DraftWaypoint(
             new WorldPoint(
                 xKilometers * 1_000_000,
                 yKilometers * 1_000_000),
-            new StableId(stationId));
+            stationId is null ? null : new StableId(stationId));
     }
 }

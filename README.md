@@ -13,9 +13,11 @@ Godot 2D 宏观地图编辑器，以及与界面解耦的纯 C# 确定性领域�
 - 示例 A—C—D—B 双线、线路二、D 附近双向联络线。
 - 普通几何交叉默认不互通；只有显式连接才改变行车拓扑。
 - 原子编辑、撤销/重做、带版本和内容哈希的保存/读取。
-- 64 位毫米世界坐标、分块区域索引、城市—车站一对多关系和大陆级配置端口。
+- 64 位毫米世界坐标、地理与铁路分块空间索引、城市—车站一对多关系和
+  大陆级配置端口。
 - 可替换的地形来源/生成/编辑、城市布置、命名、宏观投影、分块存储/
   流式加载和编辑历史接口。
+- 可直接使用的原子文件区块存储；远距区块能独立卸载、读取并保持稳定 ID。
 
 详细站场、信号、列车动力学、时刻表和调度台属于后续里程碑；现有稳定
 ID、物理长度、方向连接、详细区引用与扩展接口会作为其接入基础。
@@ -65,7 +67,7 @@ PowerShell 直接启动：
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1
 ```
 
-脚本离线友好地执行格式、Release/Debug 构建、105 项以上测试、75% 覆盖率门，
+脚本离线友好地执行格式、Release/Debug 构建、114 项以上测试、75% 覆盖率门，
 并真正实例化地图 UI 完成三帧 Godot 无界面冒烟。成功结尾应包含：
 
 ```text
@@ -75,6 +77,9 @@ GODOT_HISTORY_SMOKE_OK rebuild=True
 GODOT_SNAPSHOT_SMOKE_OK published=True
 GODOT_PERSISTENCE_SMOKE_OK roundtrip=True
 GODOT_HOST_COMMAND_SMOKE_OK dispatched=True
+GODOT_REPLACEMENT_SMOKE_OK current=True
+GODOT_MANUAL_WARNING_SMOKE_OK confirmed=True
+GODOT_MANUAL_CONNECTOR_SMOKE_OK built=True
 VERIFY_OK
 ```
 

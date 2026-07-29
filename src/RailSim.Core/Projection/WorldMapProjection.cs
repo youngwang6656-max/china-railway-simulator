@@ -8,6 +8,10 @@ public sealed class WorldMapProjection : IWorldProjection
 {
     private readonly IMapLodPolicy _lodPolicy;
     private readonly IWorldRegionProvider _regionProvider;
+    private readonly object _railIndexGate = new();
+    private RailTopology? _indexedTopology;
+    private RailSpatialIndex? _railIndex;
+    private int _indexedChunkSizeMeters;
 
     public WorldMapProjection(IMapLodPolicy lodPolicy)
         : this(lodPolicy, new GridWorldRegionProvider())
@@ -31,9 +35,15 @@ public sealed class WorldMapProjection : IWorldProjection
         ArgumentNullException.ThrowIfNull(world);
         ArgumentNullException.ThrowIfNull(viewport);
         var lod = _lodPolicy.Select(viewport.MetersPerPixel);
+        var queryBounds = viewport.Bounds.ExpandMillimeters(
+            world.BaseWorld.Parameters.ChunkSizeMeters * 1000L);
         var region = world.BaseWorld.RegionIndex.Query(
-            viewport.Bounds,
+            queryBounds,
             _regionProvider);
+        var railRegion = GetRailIndex(
+                world.RailTopology,
+                world.BaseWorld.Parameters.ChunkSizeMeters)
+            .Query(queryBounds, _regionProvider);
         var rivers = region.RiverIds
             .OrderBy(id => id)
             .Select(id => world.BaseWorld.RiversById[id])
@@ -67,16 +77,32 @@ public sealed class WorldMapProjection : IWorldProjection
                     station.Position))
             .ToImmutableArray();
         var tracks = lod == MapLod.Regional
-            ? ProjectGroups(world.RailTopology, viewport.Bounds)
-            : ProjectTracks(world.RailTopology, viewport.Bounds);
+            ? ProjectGroups(
+                world.RailTopology,
+                viewport.Bounds,
+                railRegion.TrackIds,
+                railRegion.TrackGroupIds)
+            : ProjectTracks(
+                world.RailTopology,
+                viewport.Bounds,
+                railRegion.TrackIds);
         var nodes = lod == MapLod.Edit
-            ? ProjectNodes(world.RailTopology, viewport.Bounds)
+            ? ProjectNodes(
+                world.RailTopology,
+                viewport.Bounds,
+                railRegion.NodeIds)
             : [];
         var ports = lod == MapLod.Edit
-            ? ProjectPorts(world.RailTopology, viewport.Bounds)
+            ? ProjectPorts(
+                world.RailTopology,
+                viewport.Bounds,
+                railRegion.PortIds)
             : [];
         var connections = lod == MapLod.Edit
-            ? ProjectConnections(world.RailTopology, viewport.Bounds)
+            ? ProjectConnections(
+                world.RailTopology,
+                viewport.Bounds,
+                railRegion.ConnectionIds)
             : [];
         return new WorldMapFrame(
             world.Revision,
@@ -93,9 +119,11 @@ public sealed class WorldMapProjection : IWorldProjection
 
     private static ImmutableArray<ProjectedNode> ProjectNodes(
         RailTopology topology,
-        WorldBounds bounds)
+        WorldBounds bounds,
+        ImmutableHashSet<StableId> candidateIds)
     {
-        return topology.Nodes.Values
+        return candidateIds
+            .Select(id => topology.Nodes[id])
             .Where(node => bounds.Contains(node.Position))
             .OrderBy(node => node.Id)
             .Select(
@@ -108,9 +136,11 @@ public sealed class WorldMapProjection : IWorldProjection
 
     private static ImmutableArray<ProjectedPort> ProjectPorts(
         RailTopology topology,
-        WorldBounds bounds)
+        WorldBounds bounds,
+        ImmutableHashSet<StableId> candidateIds)
     {
-        return topology.Ports.Values
+        return candidateIds
+            .Select(id => topology.Ports[id])
             .Where(
                 port =>
                     topology.Nodes.TryGetValue(port.NodeId, out var node) &&
@@ -127,21 +157,25 @@ public sealed class WorldMapProjection : IWorldProjection
 
     private static ImmutableArray<ProjectedTrack> ProjectGroups(
         RailTopology topology,
-        WorldBounds bounds)
+        WorldBounds bounds,
+        ImmutableHashSet<StableId> candidateTrackIds,
+        ImmutableHashSet<StableId> candidateGroupIds)
     {
         var values = ImmutableArray.CreateBuilder<ProjectedTrack>();
         var groupedTracks = new HashSet<StableId>();
-        foreach (var group in topology.TrackGroups.Values.OrderBy(item => item.Id))
+        foreach (var group in candidateGroupIds
+                     .Select(id => topology.TrackGroups[id])
+                     .OrderBy(item => item.Id))
         {
-            foreach (var trackId in group.TrackIds)
-            {
-                groupedTracks.Add(trackId);
-            }
-
             var tracks = group.TrackIds
-                .Where(topology.Tracks.ContainsKey)
+                .Where(candidateTrackIds.Contains)
                 .Select(trackId => topology.Tracks[trackId])
                 .ToArray();
+            foreach (var track in tracks)
+            {
+                groupedTracks.Add(track.Id);
+            }
+
             var alignments = tracks
                 .Select(track => topology.Alignments[track.AlignmentId])
                 .DistinctBy(alignment => alignment.Id)
@@ -163,8 +197,9 @@ public sealed class WorldMapProjection : IWorldProjection
                 true));
         }
 
-        foreach (var track in topology.Tracks.Values
-                     .Where(track => !groupedTracks.Contains(track.Id))
+        foreach (var track in candidateTrackIds
+                     .Where(id => !groupedTracks.Contains(id))
+                     .Select(id => topology.Tracks[id])
                      .OrderBy(track => track.Id))
         {
             var alignment = topology.Alignments[track.AlignmentId];
@@ -181,9 +216,11 @@ public sealed class WorldMapProjection : IWorldProjection
 
     private static ImmutableArray<ProjectedTrack> ProjectTracks(
         RailTopology topology,
-        WorldBounds bounds)
+        WorldBounds bounds,
+        ImmutableHashSet<StableId> candidateIds)
     {
-        return topology.Tracks.Values
+        return candidateIds
+            .Select(id => topology.Tracks[id])
             .OrderBy(track => track.Id)
             .Where(
                 track => Intersects(
@@ -199,9 +236,11 @@ public sealed class WorldMapProjection : IWorldProjection
 
     private static ImmutableArray<ProjectedConnection> ProjectConnections(
         RailTopology topology,
-        WorldBounds bounds)
+        WorldBounds bounds,
+        ImmutableHashSet<StableId> candidateIds)
     {
-        return topology.Connections.Values
+        return candidateIds
+            .Select(id => topology.Connections[id])
             .OrderBy(connection => connection.Id)
             .Where(
                 connection =>
@@ -217,6 +256,26 @@ public sealed class WorldMapProjection : IWorldProjection
                     connection.ToTrackId,
                     topology.Nodes[connection.NodeId].Position))
             .ToImmutableArray();
+    }
+
+    private RailSpatialIndex GetRailIndex(
+        RailTopology topology,
+        int chunkSizeMeters)
+    {
+        lock (_railIndexGate)
+        {
+            if (!ReferenceEquals(_indexedTopology, topology) ||
+                _indexedChunkSizeMeters != chunkSizeMeters)
+            {
+                _railIndex = RailSpatialIndex.Build(
+                    topology,
+                    chunkSizeMeters);
+                _indexedTopology = topology;
+                _indexedChunkSizeMeters = chunkSizeMeters;
+            }
+
+            return _railIndex!;
+        }
     }
 
     private static ProjectedTrack ToProjectedTrack(

@@ -198,6 +198,77 @@ public sealed class AlignmentStrategyTests
     }
 
     [Fact]
+    public void ValidatorRejectsOrphanAlignmentInDoubleTrackPatch()
+    {
+        var complete = new DoubleTrackCorridorStrategy(
+            new DeterministicStableIdSource("orphan-alignment"))
+            .CreatePatch(
+                RailTopology.Empty,
+                new ControlPointSplineStrategy().Build(
+                [
+                    Waypoint(0, 0, null),
+                    Waypoint(100, 0, null)
+                ]),
+                TrackPlacementOptions.HighSpeedDoubleTrack);
+        var orphan = new Alignment(
+            new StableId("alignment:orphan"),
+            [new WorldPoint(0, 10_000), new WorldPoint(100_000, 10_000)],
+            100_000);
+        var invalid = complete with
+        {
+            AddedAlignments = complete.AddedAlignments.Add(orphan)
+        };
+
+        var result = new RailEditValidator().Validate(
+            RailTopology.Empty,
+            invalid);
+
+        Assert.Contains(
+            result.Issues,
+            issue =>
+                issue.Code == "rail.double_track.alignment_incomplete" &&
+                issue.Severity == RailValidationSeverity.Error);
+    }
+
+    [Fact]
+    public void ValidatorRequiresOneCompleteTrackGroup()
+    {
+        var complete = new DoubleTrackCorridorStrategy(
+            new DeterministicStableIdSource("split-groups"))
+            .CreatePatch(
+                RailTopology.Empty,
+                new ControlPointSplineStrategy().Build(
+                [
+                    Waypoint(0, 0, null),
+                    Waypoint(100, 0, null)
+                ]),
+                TrackPlacementOptions.HighSpeedDoubleTrack);
+        var tracks = complete.AddedTracks;
+        var invalid = complete with
+        {
+            AddedTrackGroups =
+            [
+                new TrackGroup(
+                    new StableId("group:first"),
+                    [tracks[0].Id]),
+                new TrackGroup(
+                    new StableId("group:second"),
+                    [tracks[1].Id])
+            ]
+        };
+
+        var result = new RailEditValidator().Validate(
+            RailTopology.Empty,
+            invalid);
+
+        Assert.Contains(
+            result.Issues,
+            issue =>
+                issue.Code == "rail.double_track.group_incomplete" &&
+                issue.Severity == RailValidationSeverity.Error);
+    }
+
+    [Fact]
     public void WorldAwareValidatorReportsRiverCrossingWarning()
     {
         var generated = new ProceduralWorldGenerator().Generate(
@@ -207,10 +278,10 @@ public sealed class AlignmentStrategyTests
         [
             new DraftWaypoint(
                 river.Points[0],
-                new StableId("station:source")),
+                null),
             new DraftWaypoint(
                 river.Points[^1],
-                new StableId("station:mouth"))
+                null)
         ]);
         var patch = new DoubleTrackCorridorStrategy(
             new DeterministicStableIdSource("river-warning"))

@@ -138,6 +138,81 @@ public sealed class WorldMapProjectionTests
             item => Assert.True(viewportBounds.Contains(item.Position)));
     }
 
+    [Fact]
+    public void ProjectionQueriesOneChunkBeyondViewport()
+    {
+        var world = CreateWorldWithMainLine();
+        var city = world.BaseWorld.Cities.Values.OrderBy(item => item.Id).First();
+        var viewportBounds = new WorldBounds(
+            city.Position.OffsetMillimeters(-500_000, -500_000),
+            city.Position.OffsetMillimeters(500_000, 500_000));
+        var provider = new CapturingRegionProvider();
+
+        _ = new WorldMapProjection(
+                new DefaultMapLodPolicy(),
+                provider)
+            .Project(
+                world,
+                new MapViewport(viewportBounds, metersPerPixel: 10));
+
+        var margin =
+            world.BaseWorld.Parameters.ChunkSizeMeters * 1000L;
+        Assert.Equal(
+            viewportBounds.Minimum.OffsetMillimeters(-margin, -margin),
+            provider.LastBounds.Minimum);
+        Assert.Equal(
+            viewportBounds.Maximum.OffsetMillimeters(margin, margin),
+            provider.LastBounds.Maximum);
+    }
+
+    [Fact]
+    public void RailSpatialIndexReturnsOnlyNearbyTopologyCandidates()
+    {
+        var near = new DoubleTrackCorridorStrategy(
+            new DeterministicStableIdSource("near"))
+            .CreatePatch(
+                RailTopology.Empty,
+                new ControlPointSplineStrategy().Build(
+                [
+                    new DraftWaypoint(
+                        new WorldPoint(10_000_000, 10_000_000),
+                        null),
+                    new DraftWaypoint(
+                        new WorldPoint(100_000_000, 10_000_000),
+                        null)
+                ]),
+                TrackPlacementOptions.HighSpeedDoubleTrack);
+        var topology = near.ApplyTo(RailTopology.Empty);
+        var far = new DoubleTrackCorridorStrategy(
+            new DeterministicStableIdSource("far"))
+            .CreatePatch(
+                topology,
+                new ControlPointSplineStrategy().Build(
+                [
+                    new DraftWaypoint(
+                        new WorldPoint(800_000_000, 700_000_000),
+                        null),
+                    new DraftWaypoint(
+                        new WorldPoint(900_000_000, 700_000_000),
+                        null)
+                ]),
+                TrackPlacementOptions.HighSpeedDoubleTrack);
+        topology = far.ApplyTo(topology);
+        var index = RailSpatialIndex.Build(topology, 64_000);
+
+        var region = index.Query(
+            new WorldBounds(
+                WorldPoint.Zero,
+                new WorldPoint(150_000_000, 100_000_000)),
+            new GridWorldRegionProvider());
+
+        Assert.Equal(2, region.TrackIds.Count);
+        Assert.Single(region.TrackGroupIds);
+        Assert.All(
+            region.TrackIds,
+            id => Assert.StartsWith("near:", id.Value));
+    }
+
     private static WorldState CreateWorldWithMainLine()
     {
         var generated = new ProceduralWorldGenerator().Generate(
@@ -167,5 +242,20 @@ public sealed class WorldMapProjectionTests
                 xKilometers * 1_000_000,
                 yKilometers * 1_000_000),
             new StableId(stationId));
+    }
+
+    private sealed class CapturingRegionProvider : IWorldRegionProvider
+    {
+        public WorldBounds LastBounds { get; private set; }
+
+        public ImmutableArray<WorldChunkId> EnumerateChunks(
+            WorldBounds bounds,
+            int chunkSizeMeters)
+        {
+            LastBounds = bounds;
+            return new GridWorldRegionProvider().EnumerateChunks(
+                bounds,
+                chunkSizeMeters);
+        }
     }
 }

@@ -53,6 +53,18 @@ public readonly record struct WorldBounds
             point.YMillimeters >= Minimum.YMillimeters &&
             point.YMillimeters <= Maximum.YMillimeters;
     }
+
+    public WorldBounds ExpandMillimeters(long margin)
+    {
+        if (margin < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(margin));
+        }
+
+        return new WorldBounds(
+            Minimum.OffsetMillimeters(-margin, -margin),
+            Maximum.OffsetMillimeters(margin, margin));
+    }
 }
 
 public readonly record struct WorldChunkId(long X, long Y)

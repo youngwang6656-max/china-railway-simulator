@@ -106,7 +106,7 @@ try {
     $totalTests = [int]$counters.total
     $passedTests = [int]$counters.passed
     $failedTests = [int]$counters.failed
-    if ($failedTests -ne 0 -or $totalTests -lt 105 -or $passedTests -lt 105) {
+    if ($failedTests -ne 0 -or $totalTests -lt 114 -or $passedTests -lt 114) {
         throw "Invalid test totals: total=$totalTests passed=$passedTests failed=$failedTests."
     }
 
@@ -193,6 +193,15 @@ try {
     if ($smokeOutput -notmatch 'RAILSIM_HOST_COMMAND_SMOKE dispatched=True') {
         throw "Godot host command smoke marker missing.`n$smokeOutput"
     }
+    if ($smokeOutput -notmatch 'RAILSIM_REPLACEMENT_SMOKE current=True') {
+        throw "Godot replacement smoke marker missing.`n$smokeOutput"
+    }
+    if ($smokeOutput -notmatch 'RAILSIM_MANUAL_WARNING_SMOKE confirmed=True') {
+        throw "Godot manual warning smoke marker missing.`n$smokeOutput"
+    }
+    if ($smokeOutput -notmatch 'RAILSIM_MANUAL_CONNECTOR_SMOKE built=True') {
+        throw "Godot manual connector smoke marker missing.`n$smokeOutput"
+    }
 
     Write-Host "TOOLCHAIN_OK dotnet=$dotnetVersion godot=$godotVersion"
     Write-Host "TESTS_OK total=$totalTests passed=$passedTests failed=$failedTests"
@@ -206,6 +215,9 @@ try {
     Write-Host 'GODOT_SNAPSHOT_SMOKE_OK published=True'
     Write-Host 'GODOT_PERSISTENCE_SMOKE_OK roundtrip=True'
     Write-Host 'GODOT_HOST_COMMAND_SMOKE_OK dispatched=True'
+    Write-Host 'GODOT_REPLACEMENT_SMOKE_OK current=True'
+    Write-Host 'GODOT_MANUAL_WARNING_SMOKE_OK confirmed=True'
+    Write-Host 'GODOT_MANUAL_CONNECTOR_SMOKE_OK built=True'
     Write-Host 'VERIFY_OK'
 } finally {
     Pop-Location

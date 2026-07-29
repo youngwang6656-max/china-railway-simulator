@@ -68,15 +68,17 @@ public sealed class WorldEditorController : ISnapshotContributor
     {
         get
         {
+            var current = World;
             var snapshot = _query?.GetLatest();
             if (snapshot is not null &&
                 snapshot.Sections.TryGetValue(Key, out var section) &&
-                section is WorldSnapshotSection worldSection)
+                section is WorldSnapshotSection worldSection &&
+                ReferenceEquals(worldSection.World, current))
             {
                 return worldSection.World;
             }
 
-            return World;
+            return current;
         }
     }
 

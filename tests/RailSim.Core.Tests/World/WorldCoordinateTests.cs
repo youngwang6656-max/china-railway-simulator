@@ -84,4 +84,20 @@ public sealed class WorldCoordinateTests
             selection.ChunkIds,
             chunk => Assert.Contains(chunk, world.RegionIndex.Chunks.Keys));
     }
+
+    [Fact]
+    public void SparseDiagonalPolylineIndexesEveryCrossedChunk()
+    {
+        var chunks = WorldChunkCoverage.TracePolyline(
+        [
+            new WorldPoint(1_000, 1_000),
+            new WorldPoint(255_999_000, 255_999_000)
+        ],
+        chunkSizeMeters: 64_000);
+
+        Assert.Contains(new WorldChunkId(0, 0), chunks);
+        Assert.Contains(new WorldChunkId(1, 1), chunks);
+        Assert.Contains(new WorldChunkId(2, 2), chunks);
+        Assert.Contains(new WorldChunkId(3, 3), chunks);
+    }
 }

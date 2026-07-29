@@ -18,6 +18,7 @@ public sealed class WorldEditorSession : ISnapshotContributor
     {
         _world = initialWorld ??
             throw new ArgumentNullException(nameof(initialWorld));
+        WorldStateValidator.Validate(_world);
         _validator = validator ??
             throw new ArgumentNullException(nameof(validator));
     }

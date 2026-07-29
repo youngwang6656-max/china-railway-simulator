@@ -44,6 +44,28 @@ public sealed class RailEditValidator : IRailEditValidator
         }
 
         var issues = structural.Issues.ToBuilder();
+        try
+        {
+            var candidate = patch.ApplyTo(world.RailTopology);
+            WorldStateValidator.Validate(
+                new WorldState(
+                    world.Revision,
+                    world.BaseWorld,
+                    candidate));
+        }
+        catch (Exception exception)
+            when (exception is InvalidDataException or
+                  ArgumentException or
+                  OverflowException)
+        {
+            issues.Add(new RailValidationIssue(
+                "world.state.invalid",
+                RailValidationSeverity.Error,
+                null,
+                null));
+            return new RailValidationResult(issues.ToImmutable());
+        }
+
         AddGeometryWarnings(world, patch, issues);
         return new RailValidationResult(issues.ToImmutable());
     }
@@ -120,10 +142,30 @@ public sealed class RailEditValidator : IRailEditValidator
         RailTopology candidate,
         ImmutableArray<RailValidationIssue>.Builder issues)
     {
-        foreach (var alignmentGroup in patch.AddedTracks.GroupBy(
-                     track => track.AlignmentId))
+        var addedAlignmentIds = patch.AddedAlignments
+            .Select(alignment => alignment.Id)
+            .ToHashSet();
+        var alignmentCoverageComplete =
+            patch.AddedTracks.All(
+                track => addedAlignmentIds.Contains(track.AlignmentId)) &&
+            patch.AddedAlignments.All(
+                alignment =>
+                    patch.AddedTracks.Count(
+                        track => track.AlignmentId == alignment.Id) == 2);
+        if (!alignmentCoverageComplete)
         {
-            var tracks = alignmentGroup.ToArray();
+            issues.Add(new RailValidationIssue(
+                "rail.double_track.alignment_incomplete",
+                RailValidationSeverity.Error,
+                null,
+                null));
+        }
+
+        foreach (var alignment in patch.AddedAlignments)
+        {
+            var tracks = patch.AddedTracks
+                .Where(track => track.AlignmentId == alignment.Id)
+                .ToArray();
             var validPair =
                 tracks.Length == 2 &&
                 tracks[0].LateralOffsetMillimeters ==
@@ -145,21 +187,112 @@ public sealed class RailEditValidator : IRailEditValidator
                 issues.Add(new RailValidationIssue(
                     "rail.double_track.incomplete",
                     RailValidationSeverity.Error,
-                    alignmentGroup.Key,
+                    alignment.Id,
                     null));
             }
         }
 
-        var groupedTrackIds = patch.AddedTrackGroups
-            .SelectMany(group => group.TrackIds)
-            .ToArray();
-        if (groupedTrackIds.Length != patch.AddedTracks.Length ||
-            groupedTrackIds.Distinct().Count() != groupedTrackIds.Length ||
-            patch.AddedTracks.Any(
-                track => !groupedTrackIds.Contains(track.Id)))
+        var addedTrackIds = patch.AddedTracks
+            .Select(track => track.Id)
+            .ToHashSet();
+        if (patch.AddedTrackGroups.Length != 1 ||
+            !patch.AddedTrackGroups[0].TrackIds.ToHashSet()
+                .SetEquals(addedTrackIds))
         {
             issues.Add(new RailValidationIssue(
                 "rail.double_track.group_incomplete",
+                RailValidationSeverity.Error,
+                null,
+                null));
+        }
+
+        var referencedPortIds = patch.AddedTracks
+            .SelectMany(track => new[] { track.FromPortId, track.ToPortId })
+            .ToHashSet();
+        if (!patch.AddedPorts
+                .Select(port => port.Id)
+                .ToHashSet()
+                .SetEquals(referencedPortIds))
+        {
+            issues.Add(new RailValidationIssue(
+                "rail.double_track.port_incomplete",
+                RailValidationSeverity.Error,
+                null,
+                null));
+        }
+
+        var nodesWithAddedPorts = patch.AddedPorts
+            .Select(port => port.NodeId)
+            .ToHashSet();
+        if (patch.AddedNodes.Any(
+                node => !nodesWithAddedPorts.Contains(node.Id)))
+        {
+            issues.Add(new RailValidationIssue(
+                "rail.double_track.node_incomplete",
+                RailValidationSeverity.Error,
+                null,
+                null));
+        }
+
+        if (patch.AddedConnections.Any(
+                connection =>
+                    !addedTrackIds.Contains(connection.FromTrackId) &&
+                    !addedTrackIds.Contains(connection.ToTrackId)))
+        {
+            issues.Add(new RailValidationIssue(
+                "rail.double_track.connection_orphan",
+                RailValidationSeverity.Error,
+                null,
+                null));
+        }
+
+        ValidateStraightConnections(
+            patch,
+            candidate,
+            issues);
+    }
+
+    private static void ValidateStraightConnections(
+        RailGraphPatch patch,
+        RailTopology candidate,
+        ImmutableArray<RailValidationIssue>.Builder issues)
+    {
+        var missing = false;
+        foreach (var node in candidate.Nodes.Values)
+        {
+            var incoming = patch.AddedTracks.Where(
+                track =>
+                    candidate.Ports[track.ToPortId].NodeId == node.Id);
+            var outgoing = patch.AddedTracks.Where(
+                track =>
+                    candidate.Ports[track.FromPortId].NodeId == node.Id);
+            foreach (var movement in incoming.Join(
+                         outgoing,
+                         track => track.LateralOffsetMillimeters,
+                         track => track.LateralOffsetMillimeters,
+                         (from, to) => (From: from.Id, To: to.Id)))
+            {
+                if (!candidate.Connections.Values.Any(
+                        connection =>
+                            connection.NodeId == node.Id &&
+                            connection.FromTrackId == movement.From &&
+                            connection.ToTrackId == movement.To))
+                {
+                    missing = true;
+                    break;
+                }
+            }
+
+            if (missing)
+            {
+                break;
+            }
+        }
+
+        if (missing)
+        {
+            issues.Add(new RailValidationIssue(
+                "rail.double_track.connection_incomplete",
                 RailValidationSeverity.Error,
                 null,
                 null));
