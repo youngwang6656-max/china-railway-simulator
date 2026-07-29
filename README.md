@@ -38,12 +38,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap-toolch
 
 ## 启动
 
-在 Godot 4.6.3 .NET 中打开 `game/project.godot`，然后按 F6/F5；也可以从
-PowerShell 直接启动：
+推荐从 PowerShell 启动。脚本会使用仓库内的 Godot 4.6.3 .NET，并把日志写入
+可访问的绝对路径，从而避免 Windows 上的日志目录启动错误：
 
 ```powershell
-& ".tools\godot\Godot_v4.6.3-stable_mono_win64\Godot_v4.6.3-stable_mono_win64.exe" --path game
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1
 ```
+
+也可以在 Godot 4.6.3 .NET 中打开 `game/project.godot` 后按 F6/F5。
 
 进入地图后会自动创建完整示例。工具栏可新建世界、绘制双线或联络线、
 切换明确互通方案、追加示例线路、撤销/重做及保存/读取。
