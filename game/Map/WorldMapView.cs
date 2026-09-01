@@ -740,6 +740,8 @@ public partial class WorldMapView : Control
                 true);
         }
 
+        DrawInvalidSnapFeedback();
+
         var waypoints = _controller.DraftWaypoints;
         for (var index = 0; index < waypoints.Length; index++)
         {
@@ -753,6 +755,46 @@ public partial class WorldMapView : Control
                 -1,
                 true);
         }
+    }
+
+    private void DrawInvalidSnapFeedback()
+    {
+        if (_controller.InvalidDrawingPreview is not { } invalid)
+        {
+            return;
+        }
+
+        var position = WorldToScreen(invalid.Snap.Waypoint.Position);
+        var color = new Color(1f, 0.18f, 0.12f, 0.98f);
+        DrawArc(
+            position,
+            11,
+            0,
+            MathF.Tau,
+            32,
+            color,
+            3f,
+            true);
+        DrawLine(
+            position + new Vector2(-7, -7),
+            position + new Vector2(7, 7),
+            color,
+            2.4f,
+            true);
+        DrawLine(
+            position + new Vector2(-7, 7),
+            position + new Vector2(7, -7),
+            color,
+            2.4f,
+            true);
+        DrawString(
+            ThemeDB.FallbackFont,
+            position + new Vector2(15, -12),
+            "无效候选",
+            HorizontalAlignment.Left,
+            -1,
+            13,
+            color);
     }
 
     private void DrawSnapFeedback(RailSim.Core.Editing.RailDrawingPreview preview)

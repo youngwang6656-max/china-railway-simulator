@@ -106,7 +106,7 @@ try {
     $totalTests = [int]$counters.total
     $passedTests = [int]$counters.passed
     $failedTests = [int]$counters.failed
-    if ($failedTests -ne 0 -or $totalTests -lt 156 -or $passedTests -lt 156) {
+    if ($failedTests -ne 0 -or $totalTests -lt 158 -or $passedTests -lt 158) {
         throw "Invalid test totals: total=$totalTests passed=$passedTests failed=$failedTests."
     }
 
@@ -213,7 +213,7 @@ try {
     }
     if (
         $smokeOutput -notmatch
-        'RAILSIM_DRAWING_INVALID_PREVIEW_SMOKE rejected=True'
+        'RAILSIM_DRAWING_INVALID_PREVIEW_SMOKE rejected=True marked=True'
     ) {
         throw "Godot invalid drawing preview smoke marker missing.`n$smokeOutput"
     }
@@ -248,7 +248,10 @@ try {
     Write-Host 'GODOT_EDIT_TOOLS_SMOKE_OK complete=True'
     Write-Host 'GODOT_DRAWING_FEEL_SMOKE_OK complete=True'
     Write-Host 'GODOT_DRAWING_POINTER_SMOKE_OK committed=True'
-    Write-Host 'GODOT_DRAWING_INVALID_PREVIEW_SMOKE_OK rejected=True'
+    Write-Host (
+        'GODOT_DRAWING_INVALID_PREVIEW_SMOKE_OK ' +
+        'rejected=True marked=True'
+    )
     Write-Host 'GODOT_DRAWING_PREVIEW_IDENTITY_SMOKE_OK equal=True'
     Write-Host (
         'GODOT_DRAWING_DRAG_SMOKE_OK ' +

@@ -9,6 +9,72 @@ public enum RailDrawingInputMode
     DragTangent
 }
 
+public enum RailDrawingCandidateDisposition
+{
+    Append,
+    ReplaceLast,
+    Reject
+}
+
+public readonly record struct RailDrawingCandidateDecision(
+    RailDrawingCandidateDisposition Disposition,
+    string Code)
+{
+    public static RailDrawingCandidateDecision Append()
+    {
+        return new RailDrawingCandidateDecision(
+            RailDrawingCandidateDisposition.Append,
+            "ok");
+    }
+
+    public static RailDrawingCandidateDecision ReplaceLast()
+    {
+        return new RailDrawingCandidateDecision(
+            RailDrawingCandidateDisposition.ReplaceLast,
+            "ok");
+    }
+
+    public static RailDrawingCandidateDecision Reject(string code)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(code);
+        return new RailDrawingCandidateDecision(
+            RailDrawingCandidateDisposition.Reject,
+            code);
+    }
+}
+
+public interface IRailDrawingInputStrategy
+{
+    RailDrawingInputMode Mode { get; }
+
+    RailDrawingCandidateDecision ResolveCandidate(
+        ImmutableArray<DraftWaypoint> confirmedWaypoints,
+        DraftWaypoint candidate);
+}
+
+public sealed class HybridGuidedRailDrawingInputStrategy :
+    IRailDrawingInputStrategy
+{
+    public RailDrawingInputMode Mode =>
+        RailDrawingInputMode.HybridGuided;
+
+    public RailDrawingCandidateDecision ResolveCandidate(
+        ImmutableArray<DraftWaypoint> confirmedWaypoints,
+        DraftWaypoint candidate)
+    {
+        if (!confirmedWaypoints.IsEmpty &&
+            confirmedWaypoints[^1].Position == candidate.Position)
+        {
+            return confirmedWaypoints[^1] == candidate
+                ? RailDrawingCandidateDecision.Reject(
+                    "rail.drawing.duplicate_point")
+                : RailDrawingCandidateDecision.ReplaceLast();
+        }
+
+        return RailDrawingCandidateDecision.Append();
+    }
+}
+
 public enum RailDrawingState
 {
     Idle,
@@ -42,21 +108,47 @@ public readonly record struct RailDrawingActionResult(
 public sealed class RailDrawingSession
 {
     private readonly IRailSnapResolver _snapResolver;
+    private readonly IReadOnlyDictionary<
+        RailDrawingInputMode,
+        IRailDrawingInputStrategy> _inputStrategies;
     private readonly List<DraftWaypoint> _confirmed = [];
+    private IRailDrawingInputStrategy _inputStrategy;
     private int _draggedIndex = -1;
     private DraftWaypoint _preDragWaypoint;
 
     public RailDrawingSession(
         IRailSnapResolver snapResolver,
         RailDrawingInputMode inputMode =
-            RailDrawingInputMode.HybridGuided)
+            RailDrawingInputMode.HybridGuided,
+        IEnumerable<IRailDrawingInputStrategy>? inputStrategies = null)
     {
         _snapResolver = snapResolver ??
             throw new ArgumentNullException(nameof(snapResolver));
-        InputMode = inputMode;
+        var strategies = new Dictionary<
+            RailDrawingInputMode,
+            IRailDrawingInputStrategy>
+        {
+            [RailDrawingInputMode.HybridGuided] =
+                new HybridGuidedRailDrawingInputStrategy()
+        };
+        if (inputStrategies is not null)
+        {
+            foreach (var strategy in inputStrategies)
+            {
+                ArgumentNullException.ThrowIfNull(strategy);
+                strategies[strategy.Mode] = strategy;
+            }
+        }
+
+        _inputStrategies = strategies;
+        if (!strategies.TryGetValue(inputMode, out _inputStrategy!))
+        {
+            throw new InvalidOperationException(
+                $"No rail drawing input strategy is registered for {inputMode}.");
+        }
     }
 
-    public RailDrawingInputMode InputMode { get; private set; }
+    public RailDrawingInputMode InputMode => _inputStrategy.Mode;
 
     public RailDrawingState State { get; private set; }
 
@@ -74,24 +166,21 @@ public sealed class RailDrawingSession
                 return ConfirmedWaypoints;
             }
 
-            if (_confirmed.Count > 0 &&
-                _confirmed[^1].Position ==
-                CurrentSnap.Waypoint.Position)
+            var confirmed = ConfirmedWaypoints;
+            var decision = _inputStrategy.ResolveCandidate(
+                confirmed,
+                CurrentSnap.Waypoint);
+            return decision.Disposition switch
             {
-                if (_confirmed[^1] == CurrentSnap.Waypoint)
-                {
-                    return ConfirmedWaypoints;
-                }
-
-                return _confirmed
-                    .Take(_confirmed.Count - 1)
-                    .Append(CurrentSnap.Waypoint)
-                    .ToImmutableArray();
-            }
-
-            return _confirmed
-                .Append(CurrentSnap.Waypoint)
-                .ToImmutableArray();
+                RailDrawingCandidateDisposition.Append =>
+                    confirmed.Add(CurrentSnap.Waypoint),
+                RailDrawingCandidateDisposition.ReplaceLast
+                    when !confirmed.IsEmpty =>
+                    confirmed.SetItem(
+                        confirmed.Length - 1,
+                        CurrentSnap.Waypoint),
+                _ => confirmed
+            };
         }
     }
 
@@ -134,22 +223,30 @@ public sealed class RailDrawingSession
         }
 
         var waypoint = CurrentSnap.Waypoint;
-        if (_confirmed.Count > 0 &&
-            _confirmed[^1].Position == waypoint.Position)
+        var decision = _inputStrategy.ResolveCandidate(
+            ConfirmedWaypoints,
+            waypoint);
+        if (decision.Disposition ==
+            RailDrawingCandidateDisposition.Reject)
         {
-            if (_confirmed[^1] == waypoint)
-            {
-                return RailDrawingActionResult.Reject(
-                    "rail.drawing.duplicate_point");
-            }
-
-            _confirmed[^1] = waypoint;
-            CurrentSnap = null;
-            State = RailDrawingState.Previewing;
-            return RailDrawingActionResult.Accept();
+            return RailDrawingActionResult.Reject(decision.Code);
         }
 
-        _confirmed.Add(waypoint);
+        if (decision.Disposition ==
+            RailDrawingCandidateDisposition.ReplaceLast)
+        {
+            if (_confirmed.Count == 0)
+            {
+                return RailDrawingActionResult.Reject(
+                    "rail.drawing.strategy_invalid");
+            }
+            _confirmed[^1] = waypoint;
+        }
+        else
+        {
+            _confirmed.Add(waypoint);
+        }
+
         CurrentSnap = null;
         State = RailDrawingState.Previewing;
         return RailDrawingActionResult.Accept();
@@ -247,7 +344,15 @@ public sealed class RailDrawingSession
 
     public void SetInputMode(RailDrawingInputMode inputMode)
     {
-        InputMode = inputMode;
+        if (!_inputStrategies.TryGetValue(
+                inputMode,
+                out var strategy))
+        {
+            throw new InvalidOperationException(
+                $"No rail drawing input strategy is registered for {inputMode}.");
+        }
+
+        _inputStrategy = strategy;
     }
 
     public void ResetAfterCommit()

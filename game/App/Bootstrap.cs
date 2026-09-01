@@ -471,9 +471,14 @@ public partial class Bootstrap : Control
             editor.DrawingPreview is null &&
             !editor.ConfirmDrawingPoint().Accepted &&
             editor.DraftWaypoints.Length == 2;
+        var invalidPreviewMarked =
+            editor.InvalidDrawingPreview is not null &&
+            !string.IsNullOrWhiteSpace(
+                editor.InvalidDrawingPreview.Reason);
         GD.Print(
             "RAILSIM_DRAWING_INVALID_PREVIEW_SMOKE " +
-            $"rejected={invalidPreviewRejected}");
+            $"rejected={invalidPreviewRejected} " +
+            $"marked={invalidPreviewMarked}");
         editor.CancelDraft();
         editor.UpdateDrawingPreview(
             origin,
@@ -636,6 +641,7 @@ public partial class Bootstrap : Control
             commit == CommandStatus.Accepted &&
             endpointIncluded &&
             invalidPreviewRejected &&
+            invalidPreviewMarked &&
             previewCommitIdentity &&
             indexedDragSnap &&
             shiftDragFree &&

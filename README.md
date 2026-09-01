@@ -12,6 +12,9 @@ Godot 2D 宏观地图编辑器，以及与界面解耦的纯 C# 确定性领域�
   平滑幽灵双轨，控制点可逐点确认、回退和拖动。
 - 节点、车站、既有轨道拆分点与角度引导按确定性优先级吸附；预览实时显示
   分段/总长度、最小估算半径、预计限速与纵断面待设计状态。
+- 无效线路候选会在光标位置显示红色圆环与叉号，同时阻止误确认。
+- 默认使用 A 混合引导模式；B 多点精确和 C 切线拖拽保留可注入、可切换的
+  `IRailDrawingInputStrategy` 输入端口及 `IAlignmentSketchStrategy` 曲线端口。
 - 将联络线吸附到既有节点，并循环选择明确的双向互通方案。
 - 既有双线可载入草案并原子改线，端点锁定且稳定 ID 保持不变。
 - 框选、删除控制点、原子删除线路、轨道拆分和互通断开；所有操作均可撤销。
@@ -82,7 +85,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1
 ```
 
-脚本离线友好地执行格式、Release/Debug 构建、156 项以上测试、75% 覆盖率门，
+脚本离线友好地执行格式、Release/Debug 构建、158 项以上测试、75% 覆盖率门，
 并真正实例化地图 UI 完成三帧 Godot 无界面冒烟。成功结尾应包含：
 
 ```text
@@ -98,7 +101,7 @@ GODOT_MANUAL_CONNECTOR_SMOKE_OK built=True
 GODOT_EDIT_TOOLS_SMOKE_OK complete=True
 GODOT_DRAWING_FEEL_SMOKE_OK complete=True
 GODOT_DRAWING_POINTER_SMOKE_OK committed=True
-GODOT_DRAWING_INVALID_PREVIEW_SMOKE_OK rejected=True
+GODOT_DRAWING_INVALID_PREVIEW_SMOKE_OK rejected=True marked=True
 GODOT_DRAWING_PREVIEW_IDENTITY_SMOKE_OK equal=True
 GODOT_DRAWING_DRAG_SMOKE_OK indexedSnap=True shiftFree=True duplicateRejected=True
 VERIFY_OK

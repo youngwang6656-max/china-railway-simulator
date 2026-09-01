@@ -149,6 +149,38 @@ public sealed class RailDrawingSessionTests
         Assert.Equal(RailDrawingState.Previewing, session.State);
     }
 
+    [Fact]
+    public void RegisteredProfessionalStrategyControlsPreviewAndConfirmation()
+    {
+        var session = new RailDrawingSession(
+            new RailSnapResolver(),
+            inputStrategies: [new ReplacingPrecisionInputStrategy()]);
+        session.SetInputMode(RailDrawingInputMode.MultiPointPrecision);
+        session.Begin(Waypoint(0, 0));
+
+        session.UpdatePreview(FreeRequest(100, 20));
+
+        Assert.Single(session.PreviewWaypoints);
+        Assert.Equal(Point(100, 20), session.PreviewWaypoints[0].Position);
+        var result = session.ConfirmPreviewPoint();
+        Assert.True(result.Accepted);
+        Assert.Single(session.ConfirmedWaypoints);
+        Assert.Equal(Point(100, 20), session.ConfirmedWaypoints[0].Position);
+    }
+
+    [Fact]
+    public void SelectingUnregisteredProfessionalModeKeepsCurrentStrategy()
+    {
+        var session = NewSession();
+
+        Assert.Throws<InvalidOperationException>(
+            () => session.SetInputMode(
+                RailDrawingInputMode.DragTangent));
+        Assert.Equal(
+            RailDrawingInputMode.HybridGuided,
+            session.InputMode);
+    }
+
     private static RailDrawingSession NewSession()
     {
         return new RailDrawingSession(new RailSnapResolver());
@@ -196,5 +228,21 @@ public sealed class RailDrawingSessionTests
         long yMeters)
     {
         return new WorldPoint(xMeters * 1000, yMeters * 1000);
+    }
+
+    private sealed class ReplacingPrecisionInputStrategy :
+        IRailDrawingInputStrategy
+    {
+        public RailDrawingInputMode Mode =>
+            RailDrawingInputMode.MultiPointPrecision;
+
+        public RailDrawingCandidateDecision ResolveCandidate(
+            ImmutableArray<DraftWaypoint> confirmedWaypoints,
+            DraftWaypoint candidate)
+        {
+            return confirmedWaypoints.IsEmpty
+                ? RailDrawingCandidateDecision.Append()
+                : RailDrawingCandidateDecision.ReplaceLast();
+        }
     }
 }

@@ -21,20 +21,24 @@ public enum WorldEditorTool
     SplitTrack
 }
 
+public sealed record InvalidRailDrawingPreview(
+    RailSnapResult Snap,
+    string Reason);
+
 public sealed class WorldEditorController : ISnapshotContributor
 {
     private readonly IWorldGenerator _generator;
     private readonly IWorldProjection _projection;
     private readonly IWorldRepository _repository;
     private readonly string _savePath;
-    private readonly RailDrawingSession _drawingSession =
-        new(new RailSnapResolver());
+    private readonly RailDrawingSession _drawingSession;
     private readonly RailDrawingPreviewBuilder _previewBuilder =
         new(new ConservativeCurveSpeedEstimator());
     private readonly RailDrawingSnapCandidateProvider
         _snapCandidateProvider = new();
     private WorldEditorSession _session = null!;
     private RailDrawingPreview? _drawingPreview;
+    private InvalidRailDrawingPreview? _invalidDrawingPreview;
     private AlignmentDraft? _confirmedDrawingDraft;
     private ISimulationQuery? _query;
     private SimulationHost? _host;
@@ -55,13 +59,19 @@ public sealed class WorldEditorController : ISnapshotContributor
         IWorldRepository repository,
         SimulationCommandBus commandBus,
         string savePath,
-        ulong seed)
+        ulong seed,
+        RailDrawingInputMode drawingInputMode,
+        IEnumerable<IRailDrawingInputStrategy>? drawingInputStrategies)
     {
         _generator = generator;
         _projection = projection;
         _repository = repository;
         ArgumentNullException.ThrowIfNull(commandBus);
         _savePath = savePath;
+        _drawingSession = new RailDrawingSession(
+            new RailSnapResolver(),
+            drawingInputMode,
+            drawingInputStrategies);
         NewWorld(seed);
         WorldEditCommandRegistration.Register(
             commandBus,
@@ -113,12 +123,22 @@ public sealed class WorldEditorController : ISnapshotContributor
 
     public RailDrawingPreview? DrawingPreview => _drawingPreview;
 
+    public InvalidRailDrawingPreview? InvalidDrawingPreview =>
+        _invalidDrawingPreview;
+
     public RailSnapResult? CurrentSnap => _drawingSession.CurrentSnap;
+
+    public RailDrawingInputMode DrawingInputMode =>
+        _drawingSession.InputMode;
 
     public static WorldEditorController CreateDefault(
         ulong seed,
         string savePath,
-        SimulationCommandBus commandBus)
+        SimulationCommandBus commandBus,
+        RailDrawingInputMode drawingInputMode =
+            RailDrawingInputMode.HybridGuided,
+        IEnumerable<IRailDrawingInputStrategy>? drawingInputStrategies =
+            null)
     {
         return new WorldEditorController(
             new ProceduralWorldGenerator(),
@@ -126,7 +146,22 @@ public sealed class WorldEditorController : ISnapshotContributor
             new JsonWorldRepository(),
             commandBus,
             savePath,
-            seed);
+            seed,
+            drawingInputMode,
+            drawingInputStrategies);
+    }
+
+    public void SetDrawingInputMode(RailDrawingInputMode inputMode)
+    {
+        if (_drawingSession.InputMode == inputMode)
+        {
+            return;
+        }
+
+        _drawingSession.SetInputMode(inputMode);
+        ResetDrawingDraft();
+        LastMessage = $"线路输入模式已切换为 {inputMode}";
+        Changed?.Invoke();
     }
 
     public void AttachQuery(ISimulationQuery query)
@@ -373,6 +408,11 @@ public sealed class WorldEditorController : ISnapshotContributor
         }
         catch (ArgumentException)
         {
+            _invalidDrawingPreview = _drawingSession.CurrentSnap is { } snap
+                ? new InvalidRailDrawingPreview(
+                    snap,
+                    "控制点不能与相邻控制点重合")
+                : null;
             _drawingSession.InvalidatePreview();
             LastMessage = "控制点不能与相邻控制点重合";
             Changed?.Invoke();
@@ -380,6 +420,7 @@ public sealed class WorldEditorController : ISnapshotContributor
         }
 
         _drawingPreview = null;
+        _invalidDrawingPreview = null;
         _confirmedDrawingDraft = null;
         _pendingWarningFingerprint = null;
         _connectorMovementPlan = 0;
@@ -405,6 +446,7 @@ public sealed class WorldEditorController : ISnapshotContributor
 
         _drawingSession.RemoveWaypoint(index);
         _drawingPreview = null;
+        _invalidDrawingPreview = null;
         _confirmedDrawingDraft = null;
         _pendingWarningFingerprint = null;
         _connectorMovementPlan = 0;
@@ -453,6 +495,7 @@ public sealed class WorldEditorController : ISnapshotContributor
                 candidates,
                 snappingDisabled,
                 snapRadiusPixels));
+        _invalidDrawingPreview = null;
         if (_drawingSession.CurrentSnap is not null &&
             (DraftWaypoints.IsEmpty ||
              DraftWaypoints[^1] !=
@@ -507,6 +550,12 @@ public sealed class WorldEditorController : ISnapshotContributor
                   OverflowException)
         {
             _drawingPreview = null;
+            _invalidDrawingPreview =
+                _drawingSession.CurrentSnap is { } invalidSnap
+                    ? new InvalidRailDrawingPreview(
+                        invalidSnap,
+                        exception.Message)
+                    : null;
             _drawingSession.InvalidatePreview();
             LastMessage = $"无效线路候选：{exception.Message}";
         }
@@ -519,6 +568,7 @@ public sealed class WorldEditorController : ISnapshotContributor
         var result = _drawingSession.ConfirmPreviewPoint();
         if (result.Accepted)
         {
+            _invalidDrawingPreview = null;
             if (_drawingPreview is not null &&
                 _drawingPreview.Draft.Waypoints.SequenceEqual(
                     DraftWaypoints))
@@ -540,6 +590,12 @@ public sealed class WorldEditorController : ISnapshotContributor
                     "候选点与上一控制点重合",
                 _ => "请先移动鼠标选择线路候选点"
             };
+            if (_drawingSession.CurrentSnap is { } invalidSnap)
+            {
+                _invalidDrawingPreview = new InvalidRailDrawingPreview(
+                    invalidSnap,
+                    LastMessage);
+            }
         }
 
         Changed?.Invoke();
@@ -550,6 +606,7 @@ public sealed class WorldEditorController : ISnapshotContributor
     {
         var result = _drawingSession.UndoStep();
         _drawingPreview = null;
+        _invalidDrawingPreview = null;
         _confirmedDrawingDraft = null;
         _pendingWarningFingerprint = null;
         LastMessage = result switch
@@ -582,6 +639,7 @@ public sealed class WorldEditorController : ISnapshotContributor
     {
         _drawingSession.BeginWaypointDrag(index);
         _drawingPreview = null;
+        _invalidDrawingPreview = null;
         _confirmedDrawingDraft = null;
     }
 
@@ -595,6 +653,7 @@ public sealed class WorldEditorController : ISnapshotContributor
     {
         _drawingSession.CancelWaypointDrag();
         _drawingPreview = null;
+        _invalidDrawingPreview = null;
         _confirmedDrawingDraft = null;
         LastMessage = "已恢复拖动前的控制点位置";
         Changed?.Invoke();
@@ -895,6 +954,7 @@ public sealed class WorldEditorController : ISnapshotContributor
         {
             _drawingSession.ResetAfterCommit();
             _drawingPreview = null;
+            _invalidDrawingPreview = null;
             _confirmedDrawingDraft = null;
             _pendingWarningFingerprint = null;
         }
@@ -1491,6 +1551,7 @@ public sealed class WorldEditorController : ISnapshotContributor
     {
         _drawingSession.Cancel();
         _drawingPreview = null;
+        _invalidDrawingPreview = null;
         _confirmedDrawingDraft = null;
     }
 
